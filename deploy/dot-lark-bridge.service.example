@@ -1,0 +1,30 @@
+# REVIEW TEMPLATE ONLY. Creating users, secret mounts, enabling a service and
+# exposing MCP need explicit main-thread authorization. No secrets included.
+[Unit]
+Description=Owner-only Feishu MCP Events bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dot-lark-bridge
+Group=dot-lark-bridge
+WorkingDirectory=/opt/dot-lark-bridge
+ExecStart=/usr/bin/node --env-file=/run/secrets/dot-lark.env /opt/dot-lark-bridge/src/main.js
+StateDirectory=dot-lark-bridge
+StateDirectoryMode=0700
+UMask=0077
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=45s
+KillSignal=SIGTERM
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/dot-lark-bridge
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

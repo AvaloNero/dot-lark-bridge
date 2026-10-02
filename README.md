@@ -4,6 +4,8 @@
 
 最小原型已实现官方 SDK 长连接入口、持久队列、MCP 2.0 Events 和固定原消息回复。**真实飞书、OAuth 发行方、插件安装、当前 dot 订阅及云端部署尚未接通验证。** 模拟回答来自固定测试数据；项目不调用模型 API，不读取 Cookie，不获取用户令牌，不导出或迁移 dot 私有记忆。
 
+接入准备已补齐：官方扫码注册/本人单聊配对向导、私有凭据文件、脱敏状态检查和固定提交源码打包。`npm.cmd run setup` 默认只显示无网络预览；真实注册/绑定须先取得 [具体授权](docs/authorization.md)。操作步骤见 [扫码与配对](docs/register-app.md)。
+
 ## 离线运行
 
 需要 Node.js **24.15+、低于 25**。安装锁定依赖后，测试和模拟器只使用合成数据及本机 loopback，不访问飞书、OpenAI 或身份服务。
@@ -66,12 +68,14 @@ npm.cmd start
 | `GET /readyz` | 配置、有订阅、SDK 连接状态；不证明 dot 已回答 |
 
 `npm.cmd run status` 只读现有数据库的数量与状态，不输出正文、秘密或回调地址。它不是管理 API。
+`npm.cmd run doctor` 默认只读脱敏配置状态，无真实凭据也能指出缺项。配对完成的私有文件可用 `LARK_CREDENTIALS_FILE` 挂载；与环境身份冲突时拒绝启动。
 
 ## 交付与依赖
 
 - [架构](docs/architecture.md)、[安全边界](docs/security.md)、[协议核实](docs/protocol.md)。
 - [真实接入](docs/activation.md)、[云端托管与操作](docs/deployment.md)。
-- [registerApp 扫码接入研究](docs/register-app.md)：仅文档，没有执行注册或获取凭据。
+- [registerApp 扫码/配对向导](docs/register-app.md)、[最少授权](docs/authorization.md)、[官方认证选择](docs/auth-decision.md)：代码可供审核，真实流程尚未执行。
+- `npm.cmd run handoff`：从干净的本地固定提交导出源码 ZIP 与 SHA-256 清单；排除秘密、数据与依赖目录。启动说明见 [云端交接](docs/handoff.md)。
 - `plugin/`：远程地址为 `.invalid` 的手动接入模板，尚未安装或发布。
 - `Dockerfile`：非 root 常驻容器及持久卷模板，尚未构建或部署。
 

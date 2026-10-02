@@ -1,33 +1,76 @@
-# registerApp 研究：后续简化接入
+# 官方扫码注册与本人单聊配对
 
-**仅检查官方说明和代码接口，没有调用 `registerApp`、生成二维码、扫码、创建应用或取回凭据。** 正式交互必须先确认租户、权限、凭据保存位置与主线程授权。
+已提供可审查、带显式执行门槛的操作向导。**本次没有执行真实注册、展示真实验证链接、取回凭据、配对账户或远程探测。** 测试中的 SDK 注册/连接均为注入的假实现。
 
-官方 [Node SDK README](https://github.com/larksuite/node-sdk#app-registration) 描述 `registerApp` 的 device authorization 流程：回调给出短期验证 URL，用户在飞书确认后取得应用凭据。它不是让桥持有飞书用户令牌的授权方式，也不是本桥的 MCP OAuth 发行方。
+先运行无网络、无写入的预览：
 
-后续候选配置如下，代码仅作为文档，不在服务或测试中执行：
+```powershell
+npm.cmd run setup -- plan
+```
+
+默认命令也是 plan。源码在 [setup.js](../src/setup.js)；它调用官方 [Node SDK registerApp](https://github.com/larksuite/node-sdk#app-registration)，而不是模拟用户登录。开始任何真实命令前，应由主线程取得 [最少授权](authorization.md)。`--confirm-*` 仅表示操作者已获得该授权，不是替用户授权。
+
+## 注册：一次扫码创建一个应用
+
+先选择获准租户并取得可核实的 tenant_key，选择已存在的私有目录及两个不同、尚不存在的文件名。Linux 目录须 0700、文件 0600；Windows 向导在写入秘密前撤销文件 ACL 继承，仅授予运行账户与 SYSTEM。不会覆盖文件、跟随路径中的 symlink，也不会自动创建秘密目录。云端 secret store 可用获准的秘密挂载，不能使用源码目录或公共下载目录。
+
+```powershell
+# ONLY after main-thread approval. Replace placeholders locally, never paste secrets in chat.
+npm.cmd run setup -- register --credentials <private-registered.json> --tenant-key <approved-tenant-key> --confirm-create-app
+```
+
+向导在操作者终端显示短期官方 HTTPS 验证链接及到期时间。主人在飞书扫码/打开该页面并确认；链接不持久写入日志。默认最多等 10 分钟，Ctrl+C/SIGTERM 可取消。拒绝、过期、非飞书品牌或切换至国际 Lark 均不保存凭据。
+
+固定请求如下，不接受外部传入 scopes、domain、appId 或 callbacks：
 
 ```js
-// REVIEW ONLY — 执行会创建应用并申请持久权限，需要另行授权。
-await lark.registerApp({
+{
+  domain: 'accounts.feishu.cn',
   createOnly: true,
   source: 'dot-lark-bridge',
   addons: {
     preset: false,
     scopes: { tenant: ['im:message.p2p_msg:readonly', 'im:message:send_as_bot'] },
     events: { items: { tenant: ['im.message.receive_v1'] } }
-  },
-  signal: operatorAbortSignal,
-  onQRCodeReady: showShortLivedUrlToOwner,
-  onStatusChange: showNonSensitiveStatus
-});
+  }
+}
 ```
 
-必须先确认所选权限名在控制台仍受支持。`createOnly` 避免覆盖现有应用；`addons.preset=false` 避免默认模板带入不需要的业务权限，不添加 user scopes / callbacks。默认模板的 additive 权限不能通过 addons 削减，因此不能直接复用 README 中宽权限例子。
+`preset=false` 采用最小机器人基底，避免 SDK 默认模板的额外业务权限。没有 user scopes、Cookie、用户 token、通讯录、日历、群聊权限或选定已有应用的入口。确认页面允许用户修改，操作者仍须核对实际授予的权限，向导不声称已自动核实全部权限。
 
-SDK 返回 `client_id/client_secret` 以及可选 `user_info.open_id/tenant_brand`。不要照搬把 App Secret 打印到 stdout 的示例。后续实现应直接送入已授权的秘密存储，并只显示非秘密的确认状态；不能通过聊天、日志或 git 回传凭据。
+SDK 返回的 AppID/Secret 直接存入私有 JSON，只输出保存成功及是否取得主人候选 open_id。SDK 返回的可选扫描用户 open_id 必须属于获准主人；若缺失，保持未配对，先通过批准的官方资料核实应用内 open_id，再在本地配对命令提供。tenant_key 不从第一条事件猜测。
 
-这个返回值没有保证提供本桥必需的 tenant_key 与私聊 chat_id，open_id 也需核实应用作用域。服务仍要求显式绑定完整元组，不自动认领扫码者或第一条入站消息。
+官方 SDK 的 addons 不配置事件订阅方式、安全参数等。扫码后仍需在官方控制台确认：应用机器人启用，仅主人可用，`im.message.receive_v1` 使用长连接，按租户审批规则发布/启用。拒绝或取消不会自动删除已经由主人确认创建的应用；保存失败需在官方控制台核查已有应用，不能盲目重复创建。
 
-README 明确将事件订阅方式、请求 URL、security 和加密参数等排除在 addons 外；扫码创建后仍要在官方控制台或获准的配置 API 中确认长连接模式、机器人能力、可用范围及应用发布。后续不得因扫码成功就认为当前 dot 已接通。
+## 配对：主人发送一次短期口令
 
-账户域名默认 `accounts.feishu.cn`，国际 Lark 是另一个品牌/域名；本原型只允许飞书。`AbortSignal` 用于取消轮询，需处理拒绝、过期与 abort，并避免留存未获准的应用或权限。全过程仍独立于 OpenAI 插件安装及当前 dot 的事件订阅。
+```powershell
+# ONLY after main-thread approval, console enablement, and verified owner identity.
+npm.cmd run setup -- pair --credentials <private-registered.json> --binding <private-paired.json> --confirm-bind
+# Only if the SDK did not return the verified owner's open_id:
+# append --owner-open-id <verified-app-scoped-open-id>
+```
+
+配对进程没有 MCP HTTP 服务、队列转发或回复工具。它用官方应用身份 WSS，在终端给出随机 192 位、5 分钟有效的 `pair ...` 文字；主人在该机器人的单聊发送完整口令。只有原始事件 header 的 app/tenant、sender 的已知主人/tenant/user 类型、p2p 纯文字、时间及精确口令全部匹配才保存 chat_id。其他人、群聊、覆盖 header、附件、引用、mentions、旧消息、过期或重放均不能改绑定。
+
+首次发送者永远不能成为主人。若显式 owner 与扫描用户不一致，向导拒绝。配对成功立即关闭连接，将完整 app/tenant/owner/chat 元组写入新的私有文件；不启动桥，不建立 dot 订阅，不发送消息。
+
+服务从获准的秘密挂载加载绑定：
+
+```dotenv
+LARK_CREDENTIALS_FILE=/run/secrets/lark-paired.json
+```
+
+若文件未完成配对或与环境身份冲突，启动失败。单独加载文件不会开启 OAuth 或长连接，仍需完整生产配置、独立 STORAGE_KEY 与当前 dot 订阅。转移到云端秘密存储和删除初始凭据副本应在获准流程中处理，不经聊天/邮件传递秘密。
+
+## 脱敏检查
+
+```powershell
+npm.cmd run setup -- status --credentials <private-paired.json>
+npm.cmd run doctor
+npm.cmd run status
+# ONLY after approval for an app-token and read-only bot-info probe:
+npm.cmd run doctor -- --live --confirm-remote-read
+```
+
+setup status 只读文件；doctor 默认只读配置和已存在的数据库，不创建库、不联网、不输出 ID、秘密、正文或回调 URL。status 输出队列统计。获准 live probe 仅请求应用 token 和 GET bot info，输出布尔结果，不校验完整权限、主人身份或模型回应；不能当作 WSS 或当前 dot 已接通。

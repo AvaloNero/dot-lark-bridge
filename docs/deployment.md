@@ -2,6 +2,8 @@
 
 最终运行位置应是获批准的单实例云 VM 或持续运行的容器服务。需要持续进程/CPU、稳定 HTTPS MCP 入口、出站 WSS 与 HTTPS、持久卷、TLS 和秘密管理。停止用户电脑不能影响云实例。静态网站、请求结束就冻结的函数和会休眠的实例不满足要求；本次未选择供应商或产生费用。
 
+固定提交源码 ZIP/SHA-256、Node/SQLite/worker 启动方式和 systemd 审核模板见 [handoff.md](handoff.md)。官方认证选择与安全隧道的边界见 [auth-decision.md](auth-decision.md)。
+
 ## 发布前准备
 
 - 审批供应商、地区、数据存储/备份范围、预算、OAuth 发行方和身份绑定；完成 [activation.md](activation.md)。

@@ -14,7 +14,10 @@
     "test": "node --test --test-concurrency=1 test/*.test.js",
     "test:coverage": "node --test --test-concurrency=1 --experimental-test-coverage test/*.test.js",
     "simulate": "node scripts/simulate.js",
-    "status": "node --env-file-if-exists=.env scripts/status.js"
+    "status": "node --env-file-if-exists=.env scripts/status.js",
+    "setup": "node scripts/setup.js",
+    "doctor": "node --env-file-if-exists=.env scripts/doctor.js",
+    "handoff": "node scripts/package-handoff.js"
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "1.74.0"

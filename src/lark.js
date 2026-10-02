@@ -16,6 +16,15 @@ export function incomingMessage(data, config, now) {
   if (!config.ownerOpenId || !config.tenantKey || !config.ownerChatId || !config.larkAppId || !config.principal || config.authMode === 'deny') {
     throw new BridgeError('Owner binding is not configured', { status: 503 });
   }
+  return ownerPrivateText(data, config, now);
+}
+
+// Shared by normal ingestion and the operator-only pairing dispatcher. Pairing
+// has no MCP server or tools and must already know the approved app/tenant/owner.
+export function ownerPrivateText(data, config, now) {
+  if (!config.ownerOpenId || !config.tenantKey || !config.ownerChatId || !config.larkAppId) {
+    throw new BridgeError('Feishu identity is incomplete', { status: 503 });
+  }
   if (!data || data.event_type !== INBOUND_EVENT || data.app_id !== config.larkAppId ||
       data.tenant_key !== config.tenantKey || data.sender?.tenant_key !== config.tenantKey ||
       data.sender?.sender_id?.open_id !== config.ownerOpenId || data.sender?.sender_type !== 'user') {

@@ -4,8 +4,8 @@
 
 | 检查 | 结果与范围 |
 | --- | --- |
-| `npm.cmd run check` | 21 个 JavaScript 文件、package/plugin JSON 和 10 份 Markdown 本地链接检查通过 |
-| `npm.cmd test` | **64/64 通过，0 失败、0 skipped** |
+| `npm.cmd run check` | 29 个 JavaScript 文件、package/plugin JSON 和 13 份 Markdown 本地链接检查通过 |
+| `npm.cmd test` | **77/77 通过，0 失败、0 skipped** |
 | `npm.cmd ci --offline --ignore-scripts --no-audit --no-fund` | 52 个依赖从既有缓存安装成功；未执行 lifecycle scripts |
 | `npm.cmd run simulate` | 一次 SDK 解析 → 持久队列 → 本地 HTTP MCP 订阅/工具 → 合成原消息 reply；一次事件/一次回答 |
 | SDK 1.74.0 integrity | 与官方 `registry.npmjs.org` metadata 完全一致 |
@@ -24,6 +24,9 @@
 - unsubscribe 在 token 刷新、DNS 和 callback verification 中的竞争；同 callback 再订阅的 generation 隔离；已在网络上的确定 ACK 与优雅关闭。
 - 5xx、损坏/丢失/错 chat ACK 和崩溃回复的 uncertain 无重发；401/429 明确拒绝后的有界重试。
 - 原始 SDK payload / WSS URL / 错误细节不记录；正文与 callback secret 不以明文进入测试库。
+- 注册向导离线 plan、显式执行门槛、minimal tenant grants、新私有文件与禁止覆盖、凭据不输出、取消/拒绝/过期/品牌切换、未配对文件及身份冲突拒绝。
+- 官方 dispatcher 配对验证已知主人与租户、p2p 精确短期口令、原 header、防抢配对/重放/过期；成功或取消后关闭假 WSS transport，不启动 MCP/发送消息。
+- 脱敏本地状态与获准 app-token/bot-info probe 的注入假响应；正常生产仍要求 OAuth，关闭期间的 endpoint discovery 不能恢复连接。
 
 模拟输出明确为：
 
@@ -46,4 +49,4 @@
 
 SDK WSS 握手/断线重投、真实应用权限/启用和绑定、OAuth 流程/刷新/撤销、目标同一个 dot 的插件事件订阅及模型回应、飞书 UI 原私聊位置、云端实例与持久卷、电脑离线场景，均未验证。Docker 未构建，插件模板仅 JSON 解析，没有实际安装或发布。
 
-不能把 64 项模拟测试或 2xx 回调称作已接通飞书、QQ 或当前 dot。真实依赖与验收项在 [activation.md](activation.md)，故障限制在 [architecture.md](architecture.md) 与 [security.md](security.md)。
+不能把模拟测试或 2xx 回调称作已接通飞书、QQ 或当前 dot。真实依赖与验收项在 [activation.md](activation.md)，故障限制在 [architecture.md](architecture.md) 与 [security.md](security.md)。注册与配对仅在测试中注入假 SDK，没有调用真实 registerApp、取得真实凭据或连接飞书；源码包及启动模板不是实际云端验收。

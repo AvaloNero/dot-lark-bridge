@@ -7,7 +7,7 @@ RUN mkdir -p /data && chown node:node /data /app
 COPY --chown=node:node package.json package-lock.json LICENSE ./
 RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
 COPY --chown=node:node src/ ./src/
-COPY --chown=node:node scripts/status.js ./scripts/status.js
+COPY --chown=node:node scripts/status.js scripts/doctor.js ./scripts/
 USER node
 VOLUME ["/data"]
 EXPOSE 3000

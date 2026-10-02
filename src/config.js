@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { loadCredentials } from './credentials.js';
 
 function number(env, key, fallback, min, max) {
   const value = env[key] ? Number(env[key]) : fallback;
@@ -6,14 +7,21 @@ function number(env, key, fallback, min, max) {
   return value;
 }
 export function readConfig(env = process.env) {
+  const credentials = env.LARK_CREDENTIALS_FILE ? loadCredentials(env.LARK_CREDENTIALS_FILE, { paired: true }) : {};
+  const fields = { LARK_APP_ID: 'appId', LARK_APP_SECRET: 'appSecret', LARK_OWNER_OPEN_ID: 'ownerOpenId',
+    LARK_TENANT_KEY: 'tenantKey', LARK_OWNER_CHAT_ID: 'ownerChatId' };
+  for (const [key, field] of Object.entries(fields)) {
+    if (env[key] && credentials[field] && env[key] !== credentials[field]) throw new Error(`Credential file conflicts with ${key}`);
+  }
+  const value = key => env[key] || credentials[fields[key]] || '';
   const mode = env.AUTH_MODE || 'deny';
   if (!['deny', 'dev', 'oauth'].includes(mode)) throw new Error('Invalid AUTH_MODE');
   const config = {
     host: env.HOST || '127.0.0.1', port: number(env, 'PORT', 3000, 1, 65535),
     dbPath: path.resolve(env.DATABASE_PATH || 'data/bridge.sqlite'), storageKey: env.STORAGE_KEY || '',
     authMode: mode, devToken: env.DEV_BEARER_TOKEN || '', principal: env.MCP_OWNER_SUBJECT || '',
-    larkAppId: env.LARK_APP_ID || '', larkAppSecret: env.LARK_APP_SECRET || '',
-    ownerOpenId: env.LARK_OWNER_OPEN_ID || '', tenantKey: env.LARK_TENANT_KEY || '', ownerChatId: env.LARK_OWNER_CHAT_ID || '',
+    larkAppId: value('LARK_APP_ID'), larkAppSecret: value('LARK_APP_SECRET'),
+    ownerOpenId: value('LARK_OWNER_OPEN_ID'), tenantKey: value('LARK_TENANT_KEY'), ownerChatId: value('LARK_OWNER_CHAT_ID'),
     larkTransport: env.LARK_TRANSPORT || 'disabled',
     publicOrigin: env.PUBLIC_ORIGIN || '', oauthIssuer: env.OAUTH_ISSUER || '', oauthJwksUrl: env.OAUTH_JWKS_URL || '',
     oauthAudience: env.OAUTH_AUDIENCE || '', oauthScope: env.OAUTH_REQUIRED_SCOPE || 'lark:bridge',

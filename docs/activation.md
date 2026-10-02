@@ -22,7 +22,7 @@
 4. 从已批准的官方控制台/API/受控认证事件取得并核实 AppID、租户、主人应用内 open_id 和原私聊 chat_id。桥不会凭显示名推测身份，也不会将第一条消息的发送者认作主人。
 5. 将准确身份和 App Secret 写入授权的秘密存储。若身份信息缺失，保持 deny/disabled，不能用空字段或自动学习兜底。
 
-`registerApp` 可减少手工创建步骤，但会创建应用和授予权限；研究和限制见 [register-app.md](register-app.md)。扫码不替代租户/chat 绑定验证。
+`registerApp` 可减少手工创建步骤，但会创建应用和授予权限；带执行门槛的向导见 [register-app.md](register-app.md)，最少批准范围见 [authorization.md](authorization.md)。配对只接受已知主人的短期私聊口令，扫码不替代租户/chat 绑定验证。
 
 ## OAuth 与云端
 

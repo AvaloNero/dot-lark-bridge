@@ -75,7 +75,7 @@ test('runtime uses only official discovery, guards returned WSS origins, and clo
     close({ force }) { closed = force; }
   } };
   let result = { code: 0, data: { URL: 'wss://msg-frontier.feishu.cn/ws?fixture=1' } };
-  const runtime = createLarkRuntime({ ...f.config, authMode: 'oauth', larkTransport: 'long-connection' }, f.app.bridge.store,
+  const runtime = createLarkRuntime({ ...f.config, larkAppId: 'cli_0123456789abcdef', authMode: 'oauth', larkTransport: 'long-connection' }, f.app.bridge.store,
     f.now, { sdk, send: async (url, request) => {
       assert.equal(url, 'https://open.feishu.cn/callback/ws/endpoint');
       assert.deepEqual(request.hosts, ['open.feishu.cn']);
