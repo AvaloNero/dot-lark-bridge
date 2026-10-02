@@ -1,0 +1,8 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "dot-lark-bridge",
+  "version": "0.1.0",
+  "description": "Owner-only Feishu private text events and replies for the subscribing existing dot.",
+  "repository": "https://github.com/AvaloNero/dot-lark-bridge",
+  "license": "MIT"
+}

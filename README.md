@@ -1,0 +1,82 @@
+# dot-lark-bridge
+
+飞书官方应用机器人本人私聊文字 → MCP Events → **订阅所在的现有 OpenAI dot** → `reply_to_lark` → 原飞书单聊。
+
+最小原型已实现官方 SDK 长连接入口、持久队列、MCP 2.0 Events 和固定原消息回复。**真实飞书、OAuth 发行方、插件安装、当前 dot 订阅及云端部署尚未接通验证。** 模拟回答来自固定测试数据；项目不调用模型 API，不读取 Cookie，不获取用户令牌，不导出或迁移 dot 私有记忆。
+
+## 离线运行
+
+需要 Node.js **24.15+、低于 25**。安装锁定依赖后，测试和模拟器只使用合成数据及本机 loopback，不访问飞书、OpenAI 或身份服务。
+
+```powershell
+npm.cmd ci --ignore-scripts --no-audit --no-fund
+npm.cmd run check
+npm.cmd test
+npm.cmd run simulate
+```
+
+其他 shell 可直接使用 `npm`。首次 `ci` 需要访问 npm registry；离线使用须预先缓存依赖。
+
+```json
+{
+  "mode": "OFFLINE_SIMULATION",
+  "current_dot_connected": false,
+  "real_lark_connected": false,
+  "real_websocket_connected": false,
+  "official_sdk_dispatcher_used": true,
+  "local_http_mcp_used": true,
+  "events_delivered": 1,
+  "lark_replies": 1,
+  "same_conversation": true,
+  "reply_text_source": "fixed_test_fixture"
+}
+```
+
+模拟器走真实 SDK `EventDispatcher` 解析、数据库、本地 HTTP MCP、签名与队列；外部回调和发送由注入的 fixture 接收器处理。它没有证明真实 WebSocket、当前 dot 或飞书账户可用。验证范围见 [docs/validation.md](docs/validation.md)。
+
+## 最小能力
+
+- 官方 `@larksuiteoapi/node-sdk` **1.74.0** `WSClient`，只接 `im.message.receive_v1`；没有公网飞书入站 webhook。
+- 必须明确配置一个应用、一个租户、主人 `open_id`、原私聊 `chat_id` 和一个 MCP 主体；缺任何身份默认拒绝，不从第一条消息自动认领主人。
+- 只接本人 `p2p` 纯文字。群聊、其他人、机器人、附件、富文本、引用和 mentions 不进入队列。
+- SQLite WAL / FULL 事务、消息及事件双重去重、持久订阅、频控、重启恢复、撤销检查；先提交队列，再由 SDK ACK。
+- 事件 `lark.message.created` 只接受 `{"conversation":"owner"}`。`get_lark_message` 和 `reply_to_lark` 仅访问本订阅已尝试投递的 verified message ID。
+- 回复 API 固定为原 `message_id` 的 `/reply`；工具没有收件人、URL、租户或任意聊天参数。一条消息只允许一份回答，相同回答幂等。
+- 默认本地回复期限 900 秒、每分钟各 10 条入站/回复、队列 100 项、最多 5 次远端尝试。期限是本桥策略，不是飞书的被动回复窗口。
+- 不确定的回复 ACK、5xx、损坏响应或中断发送进入 `uncertain`，不自动重发；MCP 事件按稳定 event ID 有界重试。
+
+服务端提示和工具说明不构成对 dot 其他工具的权限隔离。飞书文字只作为数据；付款、删除、外部写入、凭据或记忆导出等请求仍回 ChatGPT 取得明确确认，并需在那里配置相应权限。
+
+## 配置与服务
+
+先读 [真实接入清单](docs/activation.md)，在获准的秘密存储中填入配置后运行：
+
+```powershell
+Copy-Item .env.example .env
+npm.cmd start
+```
+
+空模板是 `AUTH_MODE=deny` / `LARK_TRANSPORT=disabled`；没有合法 `STORAGE_KEY` 时拒绝启动。`dev` 仅允许 loopback 合成测试且禁用真实长连接。生产使用 `oauth` + `long-connection`；本项目验证已有发行方的 RS256 JWT，不创建 OAuth 服务或账户。
+
+| 接口 | 用途 |
+| --- | --- |
+| `POST /mcp` | MCP 2.0 工具、事件发现、订阅和撤销，必须鉴权 |
+| `GET /.well-known/oauth-protected-resource/mcp` | OAuth 资源元数据，仅 OAuth 模式提供 |
+| `GET /healthz` | 进程存活；200 不代表真实互通 |
+| `GET /readyz` | 配置、有订阅、SDK 连接状态；不证明 dot 已回答 |
+
+`npm.cmd run status` 只读现有数据库的数量与状态，不输出正文、秘密或回调地址。它不是管理 API。
+
+## 交付与依赖
+
+- [架构](docs/architecture.md)、[安全边界](docs/security.md)、[协议核实](docs/protocol.md)。
+- [真实接入](docs/activation.md)、[云端托管与操作](docs/deployment.md)。
+- [registerApp 扫码接入研究](docs/register-app.md)：仅文档，没有执行注册或获取凭据。
+- `plugin/`：远程地址为 `.invalid` 的手动接入模板，尚未安装或发布。
+- `Dockerfile`：非 root 常驻容器及持久卷模板，尚未构建或部署。
+
+最终要摆脱用户电脑在线，需要真正的常驻云进程、持久磁盘、TLS 入口、出网和秘密管理，以及当前 dot 可用的插件/事件订阅。不是静态托管或短时函数。费用、供应商、发行方及真实身份仍需主线程确认。
+
+通用设计从 QQ 原型固定提交 `3578dd0bbc3c3fca12c610fb23c14d13ef77a193` 复用；QQ 工作树没有被修改。仓库原有 [MIT LICENSE](LICENSE) 保持不变，来源与依赖见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+官方参考：[OpenAI MCP Events](https://developers.openai.com/plugins/build/mcp-events)、[飞书 Node SDK](https://github.com/larksuite/node-sdk)。官方协议支持此桥接方式；账户开通、当前 dot 的实际订阅位置和模型行为仍须真实联调验收。

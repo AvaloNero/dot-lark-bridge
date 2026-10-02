@@ -1,0 +1,22 @@
+{
+  "name": "dot-lark-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Owner-only Feishu bot private-text bridge to an existing dot through MCP Events",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24.15 <25"
+  },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env src/main.js",
+    "check": "node scripts/check.js",
+    "test": "node --test --test-concurrency=1 test/*.test.js",
+    "test:coverage": "node --test --test-concurrency=1 --experimental-test-coverage test/*.test.js",
+    "simulate": "node scripts/simulate.js",
+    "status": "node --env-file-if-exists=.env scripts/status.js"
+  },
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "1.74.0"
+  }
+}
