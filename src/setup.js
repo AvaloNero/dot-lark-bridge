@@ -33,7 +33,7 @@ export async function registerFeishu({ credentialsFile, tenantKey, confirmed = f
       source: 'dot-lark-bridge', addons: REGISTRATION_ADDONS, signal: controller.signal,
       onQRCodeReady(info) {
         const url = new URL(info.url);
-        if (url.protocol !== 'https:' || url.hostname !== 'accounts.feishu.cn' || url.username || url.password || url.hash ||
+        if (url.protocol !== 'https:' || !['accounts.feishu.cn', 'open.feishu.cn'].includes(url.hostname) || url.username || url.password || url.hash ||
             (url.port && url.port !== '443') || !Number.isFinite(info.expireIn) || info.expireIn <= 0) {
           controller.abort(); return;
         }
