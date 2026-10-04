@@ -1,3 +1,4 @@
+import { validateLiveConfig } from './live-validation.js';
 import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -7,6 +8,7 @@ import { Vault } from './signatures.js';
 
 export class Store {
   constructor(config) {
+    validateLiveConfig(config);
     this.config = config;
     this.vault = new Vault(config.storageKey);
     if (config.dbPath !== ':memory:') {
@@ -40,6 +42,11 @@ export class Store {
       const check = this.get('SELECT value FROM metadata WHERE key=?', 'vault');
       if (check) this.vault.open(check.value, 'metadata');
       else this.run('INSERT INTO metadata VALUES (?,?)', 'vault', this.vault.seal({ version: 1 }, 'metadata'));
+      const mode = config.bridgeMode ?? 'tunnel';
+      const storedMode = this.get('SELECT value FROM metadata WHERE key=?', 'bridge_mode');
+      if (storedMode && storedMode.value !== mode) throw new Error('Database bridge mode differs; explicit migration required');
+      if (!storedMode && mode === 'sites' && this.get('SELECT count(*) AS n FROM messages').n) throw new Error('Legacy tunnel messages require explicit migration');
+      if (!storedMode) this.run('INSERT INTO metadata VALUES (?,?)', 'bridge_mode', mode);
       const binding = canonical({ app: config.larkAppId, owner: config.ownerOpenId, tenant: config.tenantKey, chat: config.ownerChatId, principal: config.principal });
       const existing = this.get('SELECT value FROM metadata WHERE key=?', 'binding');
       if (existing && existing.value !== binding) throw new Error('Stored owner/AppID/principal binding differs; do not reuse this database for a different identity');

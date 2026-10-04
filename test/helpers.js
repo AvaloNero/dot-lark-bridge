@@ -8,7 +8,7 @@ import { createLarkDispatcher } from '../src/lark-runtime.js';
 export const FIXTURE_TOKEN = 'synthetic-local-token-for-tests-only-0000000000';
 export const FIXTURE_SECRET = `whsec_${Buffer.alloc(32, 7).toString('base64')}`;
 export function config(overrides = {}) {
-  return { ...readConfig({ AUTH_MODE: 'dev', DEV_BEARER_TOKEN: FIXTURE_TOKEN, MCP_OWNER_SUBJECT: 'fixture-owner',
+  return { ...readConfig({ BRIDGE_MODE: 'tunnel', AUTH_MODE: 'dev', DEV_BEARER_TOKEN: FIXTURE_TOKEN, MCP_OWNER_SUBJECT: 'fixture-owner',
     LARK_APP_ID: 'fixture-app', LARK_APP_SECRET: 'fixture-lark-app-secret', LARK_OWNER_OPEN_ID: 'fixture_lark_owner',
     LARK_TENANT_KEY: 'fixture_tenant', LARK_OWNER_CHAT_ID: 'fixture_private_chat',
     STORAGE_KEY: Buffer.alloc(32, 8).toString('base64'), MCP_CALLBACK_ALLOWED_HOSTS: 'receiver.example.com' }),

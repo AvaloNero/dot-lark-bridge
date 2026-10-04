@@ -78,14 +78,14 @@ test('runtime uses only official discovery, guards returned WSS origins, and clo
   const runtime = createLarkRuntime({ ...f.config, larkAppId: 'cli_0123456789abcdef', authMode: 'oauth', larkTransport: 'long-connection' }, f.app.bridge.store,
     f.now, { sdk, send: async (url, request) => {
       assert.equal(url, 'https://open.feishu.cn/callback/ws/endpoint');
-      assert.deepEqual(request.hosts, ['open.feishu.cn']);
+      assert.deepEqual(request.hosts, ['open.feishu.cn']); assert.equal(request.purpose, 'provider');
       return { status: 200, body: Buffer.from(JSON.stringify(result)) };
     } }); t.after(() => runtime.close());
   await runtime.start(); assert.equal(runtime.status(), 'connected'); assert.ok(activeDispatcher); assert.equal(options.domain, lark.Domain.Feishu);
   const request = { method: 'post', url: 'https://open.feishu.cn/callback/ws/endpoint', data: { AppID: f.config.larkAppId, AppSecret: f.config.larkAppSecret } };
   await options.httpInstance.request(request);
   for (const url of ['ws://msg-frontier.feishu.cn/x', 'wss://attacker.example/x', 'wss://msg-frontier.feishu.cn:8443/x',
-    'wss://user:secret@msg-frontier.feishu.cn/x', 'wss://msg-frontier.feishu.cn.evil/x']) {
+    'wss://user:secret@msg-frontier.feishu.cn/x', 'wss://msg-frontier.feishu.cn.evil/x', 'wss://evilfeishu.cn/x', 'wss://feishu.cn/x', 'wss://msg-frontier.feishu.cn./x', 'wss://msg-frontier.feishu.cn/x#fragment', 'wss://bad_label.feishu.cn/x']) {
     result = { code: 0, data: { URL: url } }; await assert.rejects(options.httpInstance.request(request));
   }
   await assert.rejects(options.httpInstance.request({ ...request, url: 'https://attacker.example' }));

@@ -60,7 +60,7 @@ export function createLarkSender(config, send, clock = Date.now) {
     if (!pending) pending = (async () => {
       try {
         const response = await send(`${FEISHU_ORIGIN}/open-apis/auth/v3/tenant_access_token/internal`, {
-          hosts: ['open.feishu.cn'], headers: { 'Content-Type': 'application/json' }, beforeConnect: authorize,
+          purpose: 'provider', hosts: ['open.feishu.cn'], headers: { 'Content-Type': 'application/json' }, beforeConnect: authorize,
           body: Buffer.from(JSON.stringify({ app_id: config.larkAppId, app_secret: config.larkAppSecret })) });
         const data = JSON.parse(response.body.toString('utf8'));
         if (response.status !== 200 || data.code !== 0 || typeof data.tenant_access_token !== 'string' || !data.tenant_access_token ||
@@ -87,7 +87,7 @@ export function createLarkSender(config, send, clock = Date.now) {
     let response;
     try {
       response = await send(`${FEISHU_ORIGIN}/open-apis/im/v1/messages/${encodeURIComponent(message.id)}/reply`, {
-        hosts: ['open.feishu.cn'], headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+        purpose: 'provider', hosts: ['open.feishu.cn'], headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
         body: Buffer.from(JSON.stringify({ msg_type: 'text', content: JSON.stringify({ text }), reply_in_thread: false,
           uuid: replyUuid(config.larkAppId, message.id) })), beforeConnect: authorize });
     } catch (error) {

@@ -38,3 +38,38 @@ SQLite WAL 不能只复制正在写入的单个主文件。使用 SQLite 一致�
 正文/回答默认 7 天逻辑清除，永久去重墓碑与统计仍会增长，需监控卷容量。备份、WAL 和旧页可能继续含加密历史；逻辑删除不是物理擦除。长时间中断、未订阅及平台已过重投期限的消息可能丢失，服务不拉聊天历史补齐。
 
 本次未执行 Docker build、云部署、反向代理配置、秘密创建、付费选择、插件安装或用户电脑离线的真实验收。
+
+
+## 带日志的正式常驻入口
+
+获准服务配置齐备后，使用 `node --env-file=/approved/private/service.env scripts/run-service.js --confirm-persistent-service`（或 `npm run serve -- --confirm-persistent-service`）。入口只接受 OAuth + long-connection，继续要求完整本人绑定、callback 策略及数据库存储密钥。缺项拒绝，不能用诊断握手成功替代这些门槛。systemd 模板指向此入口，但尚未安装/启用服务。
+
+- 记录启动、HTTP 发现、返回地址验证、SDK ready、重连中/已重连、失败、停止阶段；严格只允许已知事件名。
+- 每 30 秒输出进程心跳和 SDK 连接状态、订阅存在与否、投递是否可用、重连计数。心跳不是收到飞书 pong 的独立证明。
+- `gateway_connected` 仅指飞书传输；`mcp_subscription_active` 指有效订阅；`ready_for_delivery` 需配置、订阅、连接同时满足。`end_to_end_verified` 始终 false，真实同一个 dot 收到并成功回原私聊仍须外部验收。
+- 不输出 App ID/Secret、token、owner/chat/tenant ID、消息正文、回调/WSS URL或原始 SDK 错误。SIGINT/SIGTERM 关闭 SDK 重连、worker、HTTP 和数据库。
+- 正式服务没有 15/60 秒自动停止，也没有临时扫码脚本的十分钟凭据清除；长期凭据由获批私有挂载管理。断线重连由官方 SDK 管理，不额外创建重试风暴。
+
+## 扫码后直接存入获批私有存储
+
+`node scripts/enroll-existing.js <approved-app-id> <verified-tenant-key> <approved-new-private-file> --confirm-existing-app-scan --confirm-private-storage` 只在两项明确批准齐备后执行。必须是已存在的 0700 私有目录、新的 0600 文件，不覆盖、不跟随 symlink。飞书 Secret 直接从官方响应写入私有文件，不需要用户抄到终端，也不输出到聊天。
+
+这是文件权限保护，不是应用层加密；机器管理员/获权运行账户仍可能读取，云电脑数据是否持久由环境决定。若使用外部 secret manager，须采用已批准、实际可用的导入/挂载流程，不能宣称本仓库已经提供托管秘密库。
+
+扫码成功保存后仍须验证 tenant/owner、本人 p2p 配对生成完整绑定，然后复用正式服务入口。注册脚本不启动短诊断、WSS 或 dot 订阅，也不假定安装/授权的机器人已发布启用。已有获准有效凭据应复用，不为了重新排查而重复扫码。
+
+正式运行现在必须先选 [tunnel 或 sites 模式](modes.md) 并配置同一私有锁目录。上述 OAuth/本地 MCP 要求适用于 tunnel；sites 模式本地 AUTH_MODE=deny、不开 HTTP/MCP，改由获准双凭据与当前用户订阅租约校验。
+
+
+## 同级源码与容器构建上下文
+
+源码运行需要同级 `dot-lark-bridge/` 和 `dot-qq-bridge/` 两个 clone；共享
+callback 传输位于 QQ 仓库的 `packages/dot-bridge-transport/`，不另建第三个仓库外目录。
+容器模板通过单独的只含公开 package 源码的 named build context 保留相同目录关系：
+
+```sh
+docker build --build-context bridge_transport=../dot-qq-bridge/packages/dot-bridge-transport -t dot-lark-bridge .
+```
+
+该命令在飞书仓库中执行，需要支持 named contexts 的 BuildKit。此轮只检查源码与离线测试，
+没有构建镜像；镜像模板仍须按正式部署审批和启动确认要求使用，不包含个人凭据。

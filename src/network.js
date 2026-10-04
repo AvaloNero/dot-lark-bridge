@@ -1,3 +1,5 @@
+import { makeCallbackTransport, projectCallbackTransportStatus, TRANSPORT_ERROR_CODES } from '../../dot-qq-bridge/packages/dot-bridge-transport/index.js';
+import { configuredProviderProxy, makeProviderRequester } from './provider-network.js';
 import https from 'node:https';
 import { lookup as dnsLookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
@@ -39,8 +41,26 @@ export async function resolveDestination(raw, hosts, lookup = dnsLookup) {
   }
   return { url, answers };
 }
-export function makePublicRequester({ lookup = dnsLookup, request = https.request, timeoutMs = 10000, maxBytes = 262144 } = {}) {
-  return async function send(raw, { method = 'POST', headers = {}, body = Buffer.alloc(0), hosts, beforeConnect = () => {} }) {
+export function makePublicRequester({ lookup = dnsLookup, request = https.request, timeoutMs = 10000, maxBytes = 262144, proxyEnv = process.env, providerTimeoutMs = 30000, providerSend = makeProviderRequester({ env: proxyEnv, timeoutMs: providerTimeoutMs, maxBytes }), callbackSend, managedAdapter, callbackTimeoutMs = 10000, callbackMaxBytes = 8192 } = {}) {
+  const callback = callbackSend ?? makeCallbackTransport({ lookup, request, timeoutMs: callbackTimeoutMs, maxBytes: callbackMaxBytes, proxyEnv, managedAdapter });
+  const send = async function send(raw, { method = 'POST', headers = {}, body = Buffer.alloc(0), hosts, beforeConnect = () => {}, purpose, signal }) {
+    if (purpose === 'callback') {
+      let cancelled = false;
+      const gate = () => {
+        const rejectGate = error => { cancelled = error instanceof BridgeError && error.code === -32012; throw error; };
+        try {
+          const result = beforeConnect();
+          return result && typeof result.then === 'function' ? result.then(undefined, rejectGate) : result;
+        } catch (error) { return rejectGate(error); }
+      };
+      try { return await callback(raw, { method, headers, body, hosts, beforeConnect: gate, signal }); }
+      catch (error) {
+        if (cancelled || (error instanceof BridgeError && error.code === -32012)) throw new BridgeError('Callback operation cancelled', { code: -32012 });
+        const reason = TRANSPORT_ERROR_CODES.includes(error?.code) ? error.code : 'connection_failed';
+        throw new BridgeError('Callback transport rejected', { code: -32015, data: { reason, callback_transport: callbackTransportStatus(send) }, retryable: ['dns_failed','timeout','connection_failed'].includes(reason) });
+      }
+    }
+    if (purpose === 'provider' && configuredProviderProxy(proxyEnv)) return providerSend(raw, { method, headers, body, hosts, beforeConnect });
     // The DNS check is repeated on EVERY attempt; the vetted answers are pinned in lookup.
     let timer;
     const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(fail('Destination timeout', 'timeout')), timeoutMs); });
@@ -69,4 +89,17 @@ export function makePublicRequester({ lookup = dnsLookup, request = https.reques
       req.end(body);
     });
   };
+  send.callbackTransportStatus = () => {
+    try { return safeCallbackTransportStatus(typeof callback.preflight === 'function' ? callback.preflight() : undefined); } catch { return safeCallbackTransportStatus(undefined); }
+  };
+  return send;
+}
+
+export function callbackTransportStatus(send) {
+  try { return safeCallbackTransportStatus(typeof send?.callbackTransportStatus === 'function' ? send.callbackTransportStatus() : undefined); } catch { return safeCallbackTransportStatus(undefined); }
+}
+export { TRANSPORT_ERROR_CODES };
+
+export function safeCallbackTransportStatus(value) {
+  try { return projectCallbackTransportStatus(value); } catch { return { ready: false, mode: 'blocked', reason: 'transport_unverified', proxy_configured: null, destination_binding: 'unverified', network_checked: false }; }
 }

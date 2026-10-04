@@ -56,18 +56,21 @@ export async function registerFeishu({ credentialsFile, tenantKey, confirmed = f
   } finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); }
 }
 
-export function createPairingSession(credentials, { ownerOpenId, sdk = lark, clock = Date.now, timeoutMs = 5 * 60000,
-  nonce = randomBytes(24).toString('base64url'), report = () => {} } = {}) {
+function pairingConfig(credentials, ownerOpenId, timeoutMs) {
   validateCredentials(credentials);
   if (credentials.status !== 'registered') throw new Error('Only unpaired credentials may be paired');
   if (ownerOpenId && credentials.ownerOpenId && ownerOpenId !== credentials.ownerOpenId) throw new Error('Approved owner conflicts with scanning user');
   const owner = ownerOpenId || credentials.ownerOpenId;
   if (!identity(owner)) throw new Error('Verified owner open_id required; first sender is never trusted');
+  return { larkAppId: credentials.appId, larkAppSecret: credentials.appSecret, tenantKey: credentials.tenantKey,
+    ownerOpenId: owner, replyTtlMs: timeoutMs };
+}
+export function createPairingSession(credentials, { ownerOpenId, sdk = lark, clock = Date.now, timeoutMs = 5 * 60000,
+  nonce = randomBytes(24).toString('base64url'), report = () => {} } = {}) {
+  const config = pairingConfig(credentials, ownerOpenId, timeoutMs), owner = config.ownerOpenId;
   const started = clock(), expires = started + timeoutMs, text = `pair ${nonce}`;
   let resolved = false, resolve;
   const completion = new Promise(done => { resolve = done; });
-  const config = { larkAppId: credentials.appId, larkAppSecret: credentials.appSecret, tenantKey: credentials.tenantKey,
-    ownerOpenId: owner, replyTtlMs: timeoutMs };
   const dispatcher = createVerifiedLarkDispatcher(config, async data => {
     if (resolved || clock() >= expires) return { outcome: 'ignored' };
     try {
@@ -86,24 +89,57 @@ export function createPairingSession(credentials, { ownerOpenId, sdk = lark, clo
 }
 
 export async function pairFeishu({ credentials, bindingFile, ownerOpenId, confirmed = false, signal, sdk = lark,
-  report = () => {}, timeoutMs = 5 * 60000, connectionFactory = createLarkConnection, save = writePrivateJson, clock = Date.now }) {
+  report = () => {}, timeoutMs = 5 * 60000, connectionTimeoutMs = 60000,
+  connectionFactory = createLarkConnection, save = writePrivateJson, clock = Date.now }) {
   if (!confirmed) throw new Error('Owner pairing requires prior main-thread approval and --confirm-bind');
   assertPrivateDestination(bindingFile); checkSignal(signal);
-  const session = createPairingSession(credentials, { ownerOpenId, sdk, clock, timeoutMs, report });
-  const connection = connectionFactory(session.config, session.dispatcher, { sdk, report: event => {
-    if (['lark_connected', 'lark_reconnected', 'lark_connection_failed'].includes(event)) report({ phase: event });
-  } });
-  let rejectAbort;
+  if (![timeoutMs, connectionTimeoutMs].every(value => Number.isFinite(value) && value > 0 && value <= 2147483647)) {
+    throw new Error('Pairing and connection timeouts must be finite positive durations');
+  }
+  const config = pairingConfig(credentials, ownerOpenId, timeoutMs);
+  let session, connection, connectionTimer, pairingTimer, rejectAbort, resolveReady, stopped = false, failure;
   const interrupted = new Promise((_, reject) => { rejectAbort = reject; });
-  const abort = () => rejectAbort(cancelled());
+  // A synchronous factory failure may exit before the main race is installed.
+  interrupted.catch(() => {});
+  const ready = new Promise(resolve => { resolveReady = resolve; });
+  const fail = error => {
+    if (stopped || failure) return;
+    failure = error; session?.cancel(); rejectAbort(error);
+  };
+  const abort = () => fail(cancelled());
+  // The SDK's start() can finish before WSS connects. Discard every message
+  // until its authenticated onReady callback reports lark_connected.
+  const dispatcher = { async invoke(...args) {
+    if (stopped || failure || !session) return { outcome: 'ignored' };
+    return session.dispatcher.invoke(...args);
+  } };
   signal?.addEventListener('abort', abort, { once: true });
-  const timer = setTimeout(abort, timeoutMs);
   try {
-    report({ phase: 'pairing_challenge', private_text_to_send: session.challenge, expires_in_seconds: timeoutMs / 1000 });
-    await Promise.race([connection.start(), interrupted]);
+    checkSignal(signal);
+    connectionTimer = setTimeout(() => fail(new Error('Pairing connection timed out before readiness')), connectionTimeoutMs);
+    connection = connectionFactory(config, dispatcher, { sdk, report: event => {
+      if (stopped || failure) return;
+      try {
+        if (['lark_connected', 'lark_reconnected', 'lark_connection_failed'].includes(event)) report({ phase: event });
+        if (event !== 'lark_connected' || session) return;
+        checkSignal(signal); clearTimeout(connectionTimer);
+        session = createPairingSession(credentials, { ownerOpenId, sdk, clock, timeoutMs, report });
+        pairingTimer = setTimeout(() => fail(new Error('Pairing challenge expired')), timeoutMs);
+        report({ phase: 'pairing_challenge', private_text_to_send: session.challenge, expires_in_seconds: timeoutMs / 1000 });
+        resolveReady();
+      } catch (error) { fail(error); }
+    } });
+    // Observe late startup failures too, without treating a resolved start as
+    // readiness or allowing a hung start to defeat cancellation and timeouts.
+    Promise.resolve().then(() => { if (!failure && !stopped) return connection.start(); }).catch(fail);
+    await Promise.race([ready, interrupted]);
     const paired = await Promise.race([session.completion, interrupted]); checkSignal(signal);
+    if (failure) throw failure;
     save(bindingFile, paired);
     const status = { phase: 'owner_private_chat_bound', owner_binding_complete: true, bridge_started: false, current_dot_connected: false };
     report(status); return status;
-  } finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); session.cancel(); connection.close(); }
+  } finally {
+    stopped = true; clearTimeout(connectionTimer); clearTimeout(pairingTimer);
+    signal?.removeEventListener('abort', abort); session?.cancel(); connection?.close();
+  }
 }

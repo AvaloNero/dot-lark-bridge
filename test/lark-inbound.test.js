@@ -126,7 +126,7 @@ test('SDK logger discards raw payloads, connection URLs and error details', () =
 
 test('websocket DNS policy blocks non-public answers and pins public answers on every connection', async () => {
   let count = 0;
-  const agent = createFeishuAgent(async () => ++count === 1 ? [{ address: '8.8.8.8', family: 4 }] : [{ address: '127.0.0.1', family: 4 }]);
+  const agent = createFeishuAgent(async () => ++count === 1 ? [{ address: '8.8.8.8', family: 4 }] : [{ address: '127.0.0.1', family: 4 }], { proxyEnv: {} });
   const lookup = host => new Promise((resolve, reject) => agent.options.lookup(host, { all: true }, (error, result) => error ? reject(error) : resolve(result)));
   try {
     assert.deepEqual(await lookup('msg-frontier.feishu.cn'), [{ address: '8.8.8.8', family: 4 }]);

@@ -2,11 +2,13 @@
 
 飞书官方应用机器人本人私聊文字 → MCP Events → **订阅所在的现有 OpenAI dot** → `reply_to_lark` → 原飞书单聊。
 
-最小原型已实现官方 SDK 长连接入口、持久队列、MCP 2.0 Events 和固定原消息回复。**真实飞书、OAuth 发行方、插件安装、当前 dot 订阅及云端部署尚未接通验证。** 模拟回答来自固定测试数据；项目不调用模型 API，不读取 Cookie，不获取用户令牌，不导出或迁移 dot 私有记忆。
+最小原型已实现官方 SDK 长连接入口、持久队列、MCP 2.0 Events 和固定原消息回复。**已有应用官方扫码授权回传已验证；真实 WSS、OAuth 发行方、插件安装、当前 dot 订阅及持续部署尚未接通验证。** 模拟回答来自固定测试数据；项目不调用模型 API，不读取 Cookie，不获取用户令牌，不导出或迁移 dot 私有记忆。
 
-接入准备已补齐：官方扫码注册/本人单聊配对向导、私有凭据文件、脱敏状态检查和固定提交源码打包。`npm.cmd run setup` 默认只显示无网络预览；真实注册/绑定须先取得 [具体授权](docs/authorization.md)。操作步骤见 [扫码与配对](docs/register-app.md)。
+接入准备已补齐：官方已有应用扫码更新内存会话、新应用注册/本人单聊配对向导、私有凭据文件、脱敏状态检查和固定提交源码打包。`npm.cmd run setup` 默认只显示无网络预览；真实注册/绑定须先取得 [具体授权](docs/authorization.md)。操作步骤见 [扫码与配对](docs/register-app.md)。
 
 ## 离线运行
+
+需要同级放置两个源码仓库 `dot-qq-bridge/` 与 `dot-lark-bridge/`，使用与本提交一同交付的 QQ 提交。共享 callback 传输源码位于 QQ 仓库的 `packages/dot-bridge-transport/`；仅克隆飞书仓库无法启动，不再依赖第三个 Git 外目录。以下命令在 `dot-lark-bridge/` 中执行。
 
 需要 Node.js **24.15+、低于 25**。安装锁定依赖后，测试和模拟器只使用合成数据及本机 loopback，不访问飞书、OpenAI 或身份服务。
 
@@ -74,7 +76,7 @@ npm.cmd start
 
 - [架构](docs/architecture.md)、[安全边界](docs/security.md)、[协议核实](docs/protocol.md)。
 - [真实接入](docs/activation.md)、[云端托管与操作](docs/deployment.md)。
-- [registerApp 扫码/配对向导](docs/register-app.md)、[最少授权](docs/authorization.md)、[官方认证选择](docs/auth-decision.md)：代码可供审核，真实流程尚未执行。
+- [registerApp 扫码/配对向导](docs/register-app.md)、[最少授权](docs/authorization.md)、[官方认证选择](docs/auth-decision.md)：代码可供审核，扫码实测与尚未通过的 WSS 诊断见验证记录。
 - `npm.cmd run handoff`：从干净的本地固定提交导出源码 ZIP 与 SHA-256 清单；排除秘密、数据与依赖目录。启动说明见 [云端交接](docs/handoff.md)。
 - `plugin/`：远程地址为 `.invalid` 的手动接入模板，尚未安装或发布。
 - `Dockerfile`：非 root 常驻容器及持久卷模板，尚未构建或部署。
@@ -84,3 +86,13 @@ npm.cmd start
 通用设计从 QQ 原型固定提交 `3578dd0bbc3c3fca12c610fb23c14d13ef77a193` 复用；QQ 工作树没有被修改。仓库原有 [MIT LICENSE](LICENSE) 保持不变，来源与依赖见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 官方参考：[OpenAI MCP Events](https://developers.openai.com/plugins/build/mcp-events)、[飞书 Node SDK](https://github.com/larksuite/node-sdk)。官方协议支持此桥接方式；账户开通、当前 dot 的实际订阅位置和模型行为仍须真实联调验收。
+
+## 云环境代理兼容
+
+固定官方平台请求已增加独立代理路径；MCP 回调与 OAuth 仍保留原 IP 固定检查。网络边界、测试和剩余限制见 [云环境代理支持](docs/cloud-proxy.md)。这不代表当前 dot 或真实平台已接通。
+
+已有应用可用官方扫码更新流程复用，无需重复创建；内存会话严格匹配已批准 App ID。另有独立批准的有界 WSS 诊断。授权与未验证网络边界见 [扫码与配对](docs/register-app.md)。
+
+正式持续运行使用 `npm run serve -- --confirm-persistent-service`，在已批准且齐备的 OAuth、完整本人绑定、秘密挂载和投递策略下启动。带脱敏阶段/30 秒进程心跳/断线重连日志；飞书 connected 与 dot 端到端验收分开显示。扫码直接进入批准的私有文件存储方案及局限见 [部署说明](docs/deployment.md)。
+
+正式入口支持显式 `BRIDGE_MODE=tunnel|sites`，单一模式启动、同机应用锁和数据库模式绑定。Sites模式只向私有队列出站，不同时开本地MCP；协议与隔离边界见 [双模式说明](docs/modes.md)。当前双模式仅完成私有合成验证。

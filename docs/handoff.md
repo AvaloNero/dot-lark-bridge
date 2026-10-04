@@ -66,3 +66,8 @@ node --env-file=/run/secrets/dot-lark.env scripts/status.js
 SIGTERM 后等待至少 45 秒，不在 worker 正在发送时删卷。重启事件可按原 ID 有界重投，处理中回复会变 uncertain 并禁止自动重发。备份用 SQLite 一致性机制或优雅停止，不能只复制活跃主文件；恢复保持原 STORAGE_KEY、身份和订阅 generation。更详细流程见 [deployment.md](deployment.md)。
 
 验收需要云端实例持续运行时，主人电脑离线后仍由同一目标 dot 完成一条真实原私聊回复，并检查重启、撤销和 uncertain 状态。源包、fixture 测试和 200 health 都不能替代该验收。
+
+
+## 双仓库源码交付
+
+飞书源码 ZIP 不是独立运行包。交付时同时提供已审核的 QQ 仓库提交，解压或克隆为同级 `dot-lark-bridge/` 和 `dot-qq-bridge/`，保留 QQ 仓库内的 `packages/dot-bridge-transport/`。两仓库各自保留锁定提交，交接时记录两者 SHA；不依赖第三个 Git 外 shared 目录。`config/tunnel-service.readiness.yaml` 仅包含公开占位模板，真实 Tunnel ID 和文件引用应写入仓库外的私有副本。

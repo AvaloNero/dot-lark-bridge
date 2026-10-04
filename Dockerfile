@@ -1,13 +1,15 @@
+# syntax=docker/dockerfile:1.4
 # Build/deploy only after the owner approves hosting and publication scope.
 # Official Node image. Pin its reviewed digest before an actual release.
 FROM node:24-bookworm-slim
 ENV NODE_ENV=production HOST=0.0.0.0 PORT=3000 DATABASE_PATH=/data/bridge.sqlite
-WORKDIR /app
-RUN mkdir -p /data && chown node:node /data /app
+WORKDIR /opt/dot-lark-bridge
+RUN mkdir -p /data && chown node:node /data /opt/dot-lark-bridge
 COPY --chown=node:node package.json package-lock.json LICENSE ./
 RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
 COPY --chown=node:node src/ ./src/
-COPY --chown=node:node scripts/status.js scripts/doctor.js ./scripts/
+COPY --chown=node:node scripts/ ./scripts/
+COPY --from=bridge_transport --chown=node:node / /opt/dot-qq-bridge/packages/dot-bridge-transport/
 USER node
 VOLUME ["/data"]
 EXPOSE 3000

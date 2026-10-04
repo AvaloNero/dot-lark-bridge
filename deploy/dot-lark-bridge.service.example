@@ -10,7 +10,7 @@ Type=simple
 User=dot-lark-bridge
 Group=dot-lark-bridge
 WorkingDirectory=/opt/dot-lark-bridge
-ExecStart=/usr/bin/node --env-file=/run/secrets/dot-lark.env /opt/dot-lark-bridge/src/main.js
+ExecStart=/usr/bin/node --env-file=/run/secrets/dot-lark.env /opt/dot-lark-bridge/scripts/run-service.js --confirm-persistent-service
 StateDirectory=dot-lark-bridge
 StateDirectoryMode=0700
 UMask=0077

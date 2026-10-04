@@ -17,7 +17,8 @@
     "status": "node --env-file-if-exists=.env scripts/status.js",
     "setup": "node scripts/setup.js",
     "doctor": "node --env-file-if-exists=.env scripts/doctor.js",
-    "handoff": "node scripts/package-handoff.js"
+    "handoff": "node scripts/package-handoff.js",
+    "serve": "node --env-file-if-exists=.env scripts/run-service.js"
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "1.74.0"

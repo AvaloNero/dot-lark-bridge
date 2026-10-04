@@ -1,3 +1,5 @@
+import { assertLiveStorage } from './live-storage.js';
+import { tunnelReadiness, tunnelLive, assertTunnelServiceConfig } from './tunnel-service-auth.js';
 import http from 'node:http';
 import { TextDecoder } from 'node:util';
 import { Bridge } from './bridge.js';
@@ -65,11 +67,22 @@ export function validateMcp(request, headers) {
   return params;
 }
 
-export function createApp(config, { clock = Date.now, send = makePublicRequester(), worker = true, sdk, report = () => {} } = {}) {
-  const bridge = new Bridge(config, { clock, send }), authenticate = createAuthenticator(config, send, clock);
+export function createApp(config, { clock = Date.now, send = makePublicRequester(), worker = true, sdk, approvedLive = false, report = () => {} } = {}) {
+  if (config.authMode === 'tunnel-service') assertTunnelServiceConfig(config);
+  if (tunnelLive(config) && !approvedLive) throw new Error('Explicit live startup approval required');
+  if (tunnelReadiness(config) && config.dbPath !== ':memory:') throw new Error('Tunnel readiness requires an ephemeral empty store');
+  if (config.bridgeMode === 'sites') throw new Error('Sites mode cannot start the local MCP server');
+  if (tunnelLive(config)) assertLiveStorage(config);
+  const authenticate = createAuthenticator(config, send, clock);
+  const bridge = new Bridge(config, { clock, send });
   let interval, lastTick = Promise.resolve(), stopping = false, lastPrune = 0;
   const larkRuntime = createLarkRuntime(config, bridge.store, clock, { sdk, report, send, isStopping: () => stopping });
-  const ready = () => bridge.ready() && !!bridge.store.activeSubscription(clock()) && larkRuntime.status() === 'connected';
+  const readiness = () => {
+    const configured = bridge.ready(), subscribed = !!bridge.store.activeSubscription(clock()), connected = larkRuntime.status() === 'connected';
+    return { callback_transport: bridge.callbackTransportStatus(), bridge_configuration_ready: configured, mcp_subscription_active: subscribed, gateway_connected: connected,
+      ready_for_delivery: configured && subscribed && connected, end_to_end_verified: false };
+  };
+  const ready = () => readiness().ready_for_delivery;
   const server = http.createServer(async (req, res) => {
     let rpcId, isMcp = false;
     try {
@@ -81,7 +94,7 @@ export function createApp(config, { clock = Date.now, send = makePublicRequester
       if (req.method === 'GET' && url.pathname === '/healthz') return json(res, 200, { status: 'ok', bridge_ready: ready() });
       if (req.method === 'GET' && url.pathname === '/readyz') {
         const active = ready();
-        return json(res, active ? 200 : 503, { ready: active, lark_transport: larkRuntime.status() });
+        return json(res, active ? 200 : 503, { ready: active, lark_transport: larkRuntime.status(), ...readiness() });
       }
       if (req.method === 'GET' && ['/.well-known/oauth-protected-resource', '/.well-known/oauth-protected-resource/mcp'].includes(url.pathname)) {
         if (config.authMode !== 'oauth') return json(res, 404, { error: 'OAuth is not configured' });
@@ -108,7 +121,7 @@ export function createApp(config, { clock = Date.now, send = makePublicRequester
     } catch (error) {
       const safe = error instanceof BridgeError ? error : new BridgeError('Internal bridge error', { status: 500, code: -32603 });
       const extra = safe.status === 401 && isMcp ? { 'WWW-Authenticate': config.authMode === 'oauth' ?
-        `Bearer resource_metadata="${config.publicOrigin}/.well-known/oauth-protected-resource/mcp", scope="${config.oauthScope}"` : 'Bearer' } : {};
+        `Bearer resource_metadata="${config.publicOrigin}/.well-known/oauth-protected-resource/mcp", scope="${config.oauthScope}"` : config.authMode === 'tunnel-service' ? 'DotBridgeService' : 'Bearer' } : {};
       if (!res.headersSent && !res.destroyed) json(res, safe.status, isMcp ? { jsonrpc: '2.0', id: rpcId ?? null,
         error: { code: safe.code, message: safe.message, ...(safe.data ? { data: safe.data } : {}) } } : { error: safe.message }, extra);
     }
@@ -117,21 +130,27 @@ export function createApp(config, { clock = Date.now, send = makePublicRequester
   server.keepAliveTimeout = 5000; server.maxConnections = 64;
   function runWorker() {
     if (stopping || bridge.running) return;
-    lastTick = bridge.tick().then(() => {
+    lastTick = Promise.resolve(larkRuntime.syncSubscription()).then(() => bridge.tick()).then(() => {
       if (clock() - lastPrune > 3600000) { bridge.store.prune(clock()); lastPrune = clock(); }
     }).catch(() => { process.stderr.write('Worker failure; inspect durable queue using the operator runbook.\n'); });
   }
-  let closing;
-  return { server, bridge, larkRuntime,
+  let closing, listening = false, listenSettled;
+  return { server, bridge, larkRuntime, readiness,
     async listen(port = config.port, host = config.host) {
-      await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, host, resolve); });
-      if (worker) { interval = setInterval(runWorker, config.workerIntervalMs); interval.unref(); }
+      if (stopping || closing || listening) throw new Error('Listener cannot restart or start twice');
+      listening = true;
+      if (config.authMode === 'tunnel-service' && !['127.0.0.1', '::1'].includes(host)) throw new Error('Tunnel service listener must be loopback');
+      listenSettled = new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, host, resolve); });
+      await listenSettled;
+      if (stopping) return server.address();
+      if (worker && !tunnelReadiness(config)) { interval = setInterval(runWorker, config.workerIntervalMs); interval.unref(); }
       await larkRuntime.start();
       return server.address();
     },
     async close() {
       if (!closing) closing = (async () => {
         stopping = true; clearInterval(interval); larkRuntime.close();
+        await listenSettled?.catch(() => {});
         await new Promise(resolve => server.close(resolve));
         await lastTick; bridge.store.close();
       })();

@@ -133,7 +133,8 @@ test('pairing challenge expires and cancelled sessions cannot claim a chat', asy
 
 test('pair wizard writes a complete private binding, stops its WSS transport, and does not start MCP or reply', async t => {
   const file = temporary(t), reports = []; let challenge, closed = false;
-  const connectionFactory = (_settings, dispatcher) => ({ async start() {
+  const connectionFactory = (_settings, dispatcher, options) => ({ async start() {
+    options.report('lark_connected'); await Promise.resolve();
     assert.equal((await dispatcher.invoke(payload(Date.now(), challenge), { needCheck: false })).outcome, 'paired');
   }, close() { closed = true; } });
   const result = await pairFeishu({ credentials: registered, bindingFile: file('paired.json'), confirmed: true,
@@ -146,7 +147,7 @@ test('pair wizard writes a complete private binding, stops its WSS transport, an
 test('pair timeout closes transport and does not save a partial or auto-claimed binding', async t => {
   const file = temporary(t); let started = false, closed = false;
   await assert.rejects(pairFeishu({ credentials: registered, bindingFile: file('paired.json'), confirmed: true, timeoutMs: 25,
-    connectionFactory: () => ({ async start() { started = true; }, close() { closed = true; } }) }));
+    connectionFactory: (_settings, _dispatcher, options) => ({ async start() { started = true; options.report('lark_connected'); }, close() { closed = true; } }) }));
   assert.equal(started, true); assert.equal(closed, true); assert.equal(fs.existsSync(file('paired.json')), false);
 });
 
