@@ -22,7 +22,7 @@ npm.cmd run setup -- plan
 
 ## 新应用专用：一次扫码创建一个应用
 
-先选择获准租户并取得可核实的 tenant_key，选择已存在的私有目录及两个不同、尚不存在的文件名。Linux 目录须 0700、文件 0600；Windows 向导在写入秘密前撤销文件 ACL 继承，仅授予运行账户与 SYSTEM。不会覆盖文件、跟随路径中的 symlink，也不会自动创建秘密目录。云端 secret store 可用获准的秘密挂载，不能使用源码目录或公共下载目录。
+先选择获准租户并取得可核实的 tenant_key，选择已存在的私有目录及两个不同、尚不存在的文件名。Linux 目录须 0700、文件 0600；Windows 使用固定的本地 NTFS 句柄和所有者/SYSTEM 私有 DACL，创建临时文件时即设置权限，再原子发布，现有目录 ACL 只校验、不修改。不会覆盖文件、跟随路径中的重解析点或 symlink，也不会自动创建秘密目录。云端 secret store 可用获准的秘密挂载，不能使用源码目录或公共下载目录。
 
 ```powershell
 # ONLY after main-thread approval. Replace placeholders locally, never paste secrets in chat.

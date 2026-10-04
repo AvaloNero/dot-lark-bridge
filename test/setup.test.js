@@ -1,3 +1,4 @@
+import { privateMkdtempSync, fixtureChmodSync } from '../../dot-qq-bridge/packages/dot-bridge-platform/test-fixtures.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -17,7 +18,7 @@ import { larkPayload, config } from './helpers.js';
 const registered = { version: 1, status: 'registered', appId: 'cli_0123456789abcdef',
   appSecret: 'fixture-app-secret-no-real-account', tenantKey: 'fixture_tenant', ownerOpenId: 'fixture_lark_owner' };
 function temporary(t) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'dot-lark-setup-test-')); fs.chmodSync(directory, 0o700);
+  const directory = privateMkdtempSync(path.join(os.tmpdir(), 'dot-lark-setup-test-')); fixtureChmodSync(directory, 0o700);
   t.after(() => {
     assert.ok(path.resolve(directory).startsWith(path.resolve(os.tmpdir()) + path.sep));
     // Delete only known direct fixture files; no recursive delete or computed shell command.

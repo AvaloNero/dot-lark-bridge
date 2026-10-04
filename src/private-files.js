@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { windowsReadPrivateFile, windowsWritePrivateFile, windowsPrivateDestination } from '../../dot-qq-bridge/packages/dot-bridge-platform/index.js';
 
 const MAX_BYTES = 16384;
 const unavailable = () => new Error('Private file is unavailable or unsafe');
@@ -53,7 +53,12 @@ function serialized(value) {
 }
 
 export function readPrivateJson(file) {
-  if (process.platform === 'win32') return readWindowsPrivateJson(file);
+  if (process.platform === 'win32') {
+    let bytes;
+    try { bytes = windowsReadPrivateFile(file, { maxBytes: MAX_BYTES }); return JSON.parse(bytes.toString('utf8')); }
+    catch { throw unavailable(); }
+    finally { bytes?.fill(0); }
+  }
   const opened = [], bytes = Buffer.alloc(MAX_BYTES + 1);
   try {
     const { directory, entry } = openParent(file, opened);
@@ -70,7 +75,13 @@ export function readPrivateJson(file) {
   finally { bytes.fill(0); closeAll(opened); }
 }
 export function writePrivateJson(file, value) {
-  if (process.platform === 'win32') return writeWindowsPrivateJson(file, value);
+  if (process.platform === 'win32') {
+    let bytes;
+    try { bytes = serialized(value); windowsWritePrivateFile(file, bytes); }
+    catch { throw unsaved(); }
+    finally { bytes?.fill(0); }
+    return;
+  }
   const opened = []; let bytes, entry, created;
   try {
     bytes = serialized(value);
@@ -84,52 +95,13 @@ export function writePrivateJson(file, value) {
   finally { bytes?.fill(0); closeAll(opened); }
 }
 export function assertPrivateDestination(file) {
-  if (process.platform === 'win32') return assertWindowsPrivateDestination(file);
+  if (process.platform === 'win32') {
+    try { return windowsPrivateDestination(file); }
+    catch { throw new Error('Choose a new destination in an existing owned private directory; no overwrite allowed'); }
+  }
   const opened = [];
   try {
     const { absolute, entry } = openParent(file, opened); missingEntry(entry); return absolute;
   } catch { throw new Error('Choose a new destination in an existing owned private directory; no overwrite allowed'); }
   finally { closeAll(opened); }
-}
-
-// Preserve the Windows ACL setup. Descriptor-relative traversal is Linux-only;
-// other Unix platforms are rejected rather than falling back to pathname checks.
-function noWindowsSymlinks(file) {
-  let current = path.resolve(file);
-  while (true) {
-    try { if (fs.lstatSync(current).isSymbolicLink()) throw unavailable(); }
-    catch (error) { if (error.code !== 'ENOENT') throw error; }
-    const parent = path.dirname(current); if (parent === current) break; current = parent;
-  }
-}
-function assertWindowsPrivateDestination(file) {
-  const absolute = path.resolve(file); noWindowsSymlinks(absolute); missingEntry(absolute);
-  if (!fs.statSync(path.dirname(absolute)).isDirectory()) throw unavailable();
-  return absolute;
-}
-function readWindowsPrivateJson(file) {
-  let fd;
-  try {
-    noWindowsSymlinks(file); fd = fs.openSync(file, 'r');
-    const stat = fs.fstatSync(fd);
-    if (!stat.isFile() || stat.nlink !== 1 || stat.size > MAX_BYTES) throw unavailable();
-    return JSON.parse(fs.readFileSync(fd, 'utf8'));
-  } catch { throw unavailable(); }
-  finally { if (fd !== undefined) closeAll([fd]); }
-}
-function writeWindowsPrivateJson(file, value) {
-  let fd, absolute, created, bytes;
-  try {
-    bytes = serialized(value); absolute = assertWindowsPrivateDestination(file);
-    fd = fs.openSync(absolute, 'wx', 0o600); created = fs.fstatSync(fd);
-    const identity = execFileSync('whoami.exe', ['/user', '/fo', 'csv', '/nh'], { encoding: 'utf8', windowsHide: true });
-    const sid = identity.match(/S-1-5-(?:\d+-)*\d+/)?.[0];
-    if (!sid) throw unavailable();
-    execFileSync('icacls.exe', [absolute, '/inheritance:r', '/grant:r', `*${sid}:(F)`, '*S-1-5-18:(F)'], { stdio: 'pipe', windowsHide: true });
-    fs.writeFileSync(fd, bytes); fs.fsyncSync(fd);
-  } catch {
-    // Windows may not permit unlinking an open handle.
-    if (fd !== undefined) { closeAll([fd]); fd = undefined; }
-    cleanupCreated(absolute, created); throw unsaved();
-  } finally { bytes?.fill(0); if (fd !== undefined) closeAll([fd]); }
 }

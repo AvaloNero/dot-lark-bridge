@@ -1,3 +1,4 @@
+import { privateMkdtempSync, fixtureChmodSync } from '../../dot-qq-bridge/packages/dot-bridge-platform/test-fixtures.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -76,17 +77,17 @@ test('uncertain provider sends are never repeated, even if remote ack was not co
 });
 
 test('shared app lock fences tunnel and Sites independent of database and refuses automatic stale takeover', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-mode-lock-')); fs.chmodSync(dir, 0o700);
+  const dir = privateMkdtempSync(path.join(os.tmpdir(), 'lark-mode-lock-')); fixtureChmodSync(dir, 0o700);
   try {
     const release = acquireModeLock(dir, 'lark', 'fixture-app', 'tunnel');
     assert.throws(() => acquireModeLock(dir, 'lark', 'fixture-app', 'sites')); release(); release();
     const releaseSites = acquireModeLock(dir, 'lark', 'fixture-app', 'sites'); releaseSites();
-    fs.chmodSync(dir, 0o755); assert.throws(() => acquireModeLock(dir, 'lark', 'fixture-app', 'sites'));
+    fixtureChmodSync(dir, 0o755); assert.throws(() => acquireModeLock(dir, 'lark', 'fixture-app', 'sites'));
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('persistent DB refuses mode switching even for same owner tuple', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-mode-db-')), dbPath = path.join(dir, 'bridge.sqlite');
+  const dir = privateMkdtempSync(path.join(os.tmpdir(), 'lark-mode-db-')), dbPath = path.join(dir, 'bridge.sqlite');
   try { const settings = config({ bridgeMode: 'tunnel', dbPath }); const db = new Store(settings); db.close(); assert.throws(() => new Store({ ...settings, bridgeMode: 'sites' }), /mode differs/); }
   finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
@@ -138,7 +139,7 @@ test('expired retained claim becomes uncertain without another provider send', a
 });
 
 test('restarting after provider send retains encrypted claim and resumes only its ACK', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-sites-restart-')), dbPath = path.join(dir, 'sites.sqlite');
+  const dir = privateMkdtempSync(path.join(os.tmpdir(), 'lark-sites-restart-')), dbPath = path.join(dir, 'sites.sqlite');
   const f = fixture(); f.settings.dbPath = dbPath; let ledger = new SitesLedger(f.settings);
   const data = larkPayload(f.now()), source = { id: data.event.message.message_id, sourceEventId: data.header.event_id, owner: f.settings.ownerOpenId,
     tenantKey: f.settings.tenantKey, chatId: f.settings.ownerChatId, text: 'fixture private body', timestamp: new Date(f.now()).toISOString(), expires: f.now() + 900000 };

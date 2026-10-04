@@ -1,3 +1,4 @@
+import { cleanupPrivateFixture, beforeFixtureCleanup, privateMkdtempSync, fixtureChmodSync } from '../../dot-qq-bridge/packages/dot-bridge-platform/test-fixtures.js';
 import { BridgeError } from '../src/common.js';
 import { createLarkDispatcher } from '../src/lark-runtime.js';
 import { preflightCallbackTransport } from '../../dot-qq-bridge/packages/dot-bridge-transport/index.js';
@@ -12,7 +13,7 @@ import { createApp } from '../src/server.js';
 import { makePublicRequester } from '../src/network.js';
 import { subscriptionParams, config as fixtureConfig, larkPayload } from './helpers.js';
 function live(t) {
- const dir=fs.mkdtempSync(path.join(os.tmpdir(),'lark-callback-fixture-'));fs.chmodSync(dir,0o700);t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+ const dir=privateMkdtempSync(path.join(os.tmpdir(),'lark-callback-fixture-'));fixtureChmodSync(dir,0o700);cleanupPrivateFixture(t,dir);
  const key=path.join(dir,'service'),storage=path.join(dir,'storage'),credential=path.join(dir,'paired');
  fs.writeFileSync(key,Buffer.alloc(32,17).toString('base64url'),{mode:0o600});fs.writeFileSync(storage,Buffer.alloc(32,18).toString('base64url'),{mode:0o600});
  fs.writeFileSync(credential,JSON.stringify({version:1,status:'paired',appId:'cli_0123456789abcdef',appSecret:'synthetic-secret-only',tenantKey:'tenant',ownerOpenId:'owner',ownerChatId:'chat'}),{mode:0o600});
@@ -30,7 +31,7 @@ test('real live Bridge challenge and queued callback enter shared direct transpo
   });return req;
  };
  const send=makePublicRequester({proxyEnv:{},lookup:async()=>{lookups++;return [{address:'8.8.8.8',family:4}];},request,providerSend:async()=>{providerCalls++;throw Error('must not call provider');}});
- const app=createApp(config,{send,worker:false,approvedLive:true});t.after(()=>app.close());
+ const app=createApp(config,{send,worker:false,approvedLive:true});beforeFixtureCleanup(t,()=>app.close());
  const principal={id:config.principal,validUntil:now+60000};await app.bridge.rpc('events/subscribe',subscriptionParams(),principal);
  app.bridge.store.ingest({id:'m',sourceEventId:'e',owner:'owner',tenantKey:'tenant',chatId:'chat',text:'synthetic only',timestamp:new Date(now).toISOString(),expires:now+60000},'replay',now);
  await app.bridge.tick();assert.deepEqual(kinds,['challenge','event']);assert.equal(lookups,2);assert.equal(providerCalls,0);
@@ -39,7 +40,7 @@ test('real live Bridge challenge and queued callback enter shared direct transpo
 test('managed proxy without adapter refuses live challenge before DNS/request and keeps safe reason',async t=>{
  const config=live(t);let dns=0,requests=0;
  const send=makePublicRequester({proxyEnv:{HTTPS_PROXY:'http://proxy.example:8080'},lookup:async()=>{dns++;throw Error('forbidden');},request:()=>{requests++;throw Error('forbidden');}});
- const app=createApp(config,{send,worker:false,approvedLive:true});t.after(()=>app.close());
+ const app=createApp(config,{send,worker:false,approvedLive:true});beforeFixtureCleanup(t,()=>app.close());
  await assert.rejects(app.bridge.rpc('events/subscribe',subscriptionParams(),{id:config.principal,validUntil:Date.now()+60000}),error=>{
   assert.equal(error.code,-32015);assert.equal(error.data.reason,'proxy_policy_unverified');assert.equal(error.data.callback_transport.ready,false);
   const visible=JSON.stringify(error);assert.equal(visible.includes('current-dot'),false);assert.equal(visible.includes('whsec_'),false);assert.equal(visible.includes('proxy.example'),false);return true;
@@ -48,14 +49,14 @@ test('managed proxy without adapter refuses live challenge before DNS/request an
 test('unrecognized callback errors never expose injected secrets or arbitrary reason text',async t=>{
  const config=live(t);const callbackSend=async()=>{const error=new Error('synthetic-secret-in-cause');error.code='synthetic-secret-code';throw error;};
  callbackSend.preflight=()=>preflightCallbackTransport({proxyEnv:{}});
- const send=makePublicRequester({callbackSend,proxyEnv:{}});const app=createApp(config,{send,worker:false,approvedLive:true});t.after(()=>app.close());
+ const send=makePublicRequester({callbackSend,proxyEnv:{}});const app=createApp(config,{send,worker:false,approvedLive:true});beforeFixtureCleanup(t,()=>app.close());
  await assert.rejects(app.bridge.rpc('events/subscribe',subscriptionParams(),{id:config.principal,validUntil:Date.now()+60000}),error=>error.code===-32015&&error.data.reason==='connection_failed'&&!JSON.stringify(error).includes('synthetic-secret'));
  assert.equal(makePublicRequester({callbackSend:async()=>{},proxyEnv:{}}).callbackTransportStatus().reason,'transport_unverified');
 });
 test('cached same-secret subscription cannot renew while callback transport is blocked',async t=>{
  const config=live(t),now=Date.now();let calls=0;
  const send=makePublicRequester({proxyEnv:{HTTPS_PROXY:'http://proxy.example:8080'},lookup:async()=>{calls++;throw Error();},request:()=>{calls++;throw Error();}});
- const app=createApp(config,{send,worker:false,approvedLive:true});t.after(()=>app.close());
+ const app=createApp(config,{send,worker:false,approvedLive:true});beforeFixtureCleanup(t,()=>app.close());
  const params=subscriptionParams(),id=app.bridge.subscriptionId(config.principal,params.delivery.url,params.name,params.arguments),expires=now+10000;
  app.bridge.store.saveSubscription({id,principal:config.principal,url:params.delivery.url,secret:params.delivery.secret,expires,verified_until:now+60000},now);
  await assert.rejects(app.bridge.rpc('events/subscribe',params,{id:config.principal,validUntil:now+120000}),e=>e.code===-32015&&e.data.reason==='proxy_policy_unverified');
@@ -81,7 +82,7 @@ test('real live challenge and event use injected managed adapter without direct 
   return {status:200,headers:{'content-type':'application/json'},body:Buffer.from(JSON.stringify(payload.type==='verification'?{challenge:payload.challenge}:{}))};
  }};
  const send=makePublicRequester({proxyEnv:{HTTPS_PROXY:'http://proxy.example:8080'},managedAdapter,lookup:async()=>{lookups++;return [{address:'8.8.8.8',family:4}];},request:()=>{direct++;throw Error('no direct network');}});
- const app=createApp(config,{send,worker:false,approvedLive:true});t.after(()=>app.close());
+ const app=createApp(config,{send,worker:false,approvedLive:true});beforeFixtureCleanup(t,()=>app.close());
  await app.bridge.rpc('events/subscribe',subscriptionParams(),{id:config.principal,validUntil:now+60000});
  app.bridge.store.ingest({id:'m',sourceEventId:'e',owner:'owner',tenantKey:'tenant',chatId:'chat',text:'synthetic only',timestamp:new Date(now).toISOString(),expires:now+60000},'replay',now);
  await app.bridge.tick();assert.deepEqual(kinds,['challenge','event']);assert.equal(lookups,2);assert.equal(direct,0);
@@ -99,7 +100,7 @@ test('synchronous authorization remains synchronous through application callback
 });
 test('malformed callback preflight fails closed in setup and lifecycle projections',async t=>{
  const config=live(t);const send=async()=>{throw Error('not called');};send.callbackTransportStatus=()=>({ready:true,extra:'private-value'});
- const app=createApp(config,{send,worker:false,approvedLive:true});t.after(()=>app.close());
+ const app=createApp(config,{send,worker:false,approvedLive:true});beforeFixtureCleanup(t,()=>app.close());
  assert.deepEqual(app.readiness().callback_transport,{ready:false,mode:'blocked',reason:'transport_unverified',proxy_configured:null,destination_binding:'unverified',network_checked:false});
  const result=await app.bridge.rpc('tools/call',{name:'check_lark_setup',arguments:{}},{id:config.principal});
  assert.equal(result.structuredContent.delivery_configured,false);assert.equal(JSON.stringify(result).includes('private-value'),false);

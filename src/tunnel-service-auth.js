@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { windowsReadPrivateFile } from '../../dot-qq-bridge/packages/dot-bridge-platform/index.js';
 import { createHash, timingSafeEqual } from 'node:crypto';
 
 const loopback = host => ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(host);
@@ -19,6 +20,16 @@ export function assertTunnelServiceConfig(config) {
     !path.isAbsolute(config.dbPath || '') || config.dbPath === ':memory:' || !path.isAbsolute(config.bridgeLockDirectory || ''))) throw new Error('Live tunnel requires verified pairing and private persistent file references');
 }
 export function readPrivateKey(file) {
+  if (process.platform === 'win32') {
+    let bytes;
+    try {
+      bytes = windowsReadPrivateFile(file, { maxBytes: 44 });
+      const key = bytes.toString('utf8').replace(/\n$/, '');
+      if (!/^[a-zA-Z0-9_-]{43}$/.test(key) || Buffer.from(key, 'base64url').toString('base64url') !== key) throw new Error();
+      return key;
+    } catch { throw new Error('Tunnel service credential file is unavailable or unsafe'); }
+    finally { bytes?.fill(0); }
+  }
   const opened = [];
   try {
     if (process.platform !== 'linux' || !path.isAbsolute(file) || path.normalize(file) !== file || !fs.constants.O_NOFOLLOW) throw new Error();

@@ -1,6 +1,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { windowsPrivateDirectory, windowsPrivateDatabase } from '../../dot-qq-bridge/packages/dot-bridge-platform/index.js';
 export function assertLiveStorage(config) {
+  if (process.platform === 'win32') {
+    try {
+      for (const directory of [path.dirname(config.dbPath), config.bridgeLockDirectory]) windowsPrivateDirectory(directory).close();
+      windowsPrivateDatabase(config.dbPath).close();
+      return;
+    } catch { throw new Error('Private live storage is unavailable or unsafe'); }
+  }
   for (const directory of [path.dirname(config.dbPath), config.bridgeLockDirectory]) {
     if (!path.isAbsolute(directory)) throw new Error('Private live directory required');
     for (let current = directory; ; current = path.dirname(current)) {

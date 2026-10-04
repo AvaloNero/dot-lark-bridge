@@ -1,3 +1,4 @@
+import { privateMkdtempSync } from '../../dot-qq-bridge/packages/dot-bridge-platform/test-fixtures.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -10,7 +11,7 @@ import { BridgeError } from '../src/common.js';
 import { replyUuid } from '../src/lark.js';
 
 function temp(t, beforeCleanup = async () => {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dot-lark-bridge-test-'));
+  const dir = privateMkdtempSync(path.join(os.tmpdir(), 'dot-lark-bridge-test-'));
   t.after(async () => {
     await beforeCleanup();
     const resolved = path.resolve(dir), parent = path.resolve(os.tmpdir());

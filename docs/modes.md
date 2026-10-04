@@ -37,8 +37,9 @@ listener, separate from OAuth. Use `BRIDGE_MODE=tunnel`, `HOST=127.0.0.1`,
 `TUNNEL_SERVICE_OWNER_ID` such as `tunnel-owner:dot-bridge`. The key file must
 contain one canonical base64url encoding of 32 random bytes (optional final
 newline), be owned by the running user with mode 0600, and have an owned 0700
-parent directory. Linux descriptor-relative traversal pins each directory; unsupported
-platforms fail closed. Symlinks and hardlinks are rejected. Keys are never printed.
+parent directory on Linux. Linux descriptor-relative traversal pins each directory;
+Windows uses [owned private DACLs and pinned NTFS handles](../../dot-qq-bridge/packages/dot-bridge-platform/README.md).
+Other platforms fail closed. Reparse points/symlinks and hardlinks are rejected. Keys are never printed.
 Provisioning a real key requires explicit approval; tests use synthetic keys.
 Mixed OAuth/dev, provider credential and callback settings are refused before any
 provider credential file is read.

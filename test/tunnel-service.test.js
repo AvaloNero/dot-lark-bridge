@@ -1,3 +1,4 @@
+import { privateMkdtempSync, fixtureChmodSync, fixtureSymlinkSync } from '../../dot-qq-bridge/packages/dot-bridge-platform/test-fixtures.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -9,7 +10,7 @@ import { readServiceKeyDigest } from '../src/tunnel-service-auth.js';
 import { createApp } from '../src/server.js';
 const key = Buffer.alloc(32, 7).toString('base64url');
 function fixture(t) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-tunnel-test-')); fs.chmodSync(dir, 0o700);
+  const dir = privateMkdtempSync(path.join(os.tmpdir(), 'lark-tunnel-test-')); fixtureChmodSync(dir, 0o700);
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const file = path.join(dir, 'key'); fs.writeFileSync(file, key + '\n', { mode: 0o600 });
   const env = { AUTH_MODE: 'tunnel-service', BRIDGE_MODE: 'tunnel', TUNNEL_SERVICE_KEY_FILE: file, TUNNEL_SERVICE_OWNER_ID: 'tunnel-owner:dot-bridge', DATABASE_PATH: path.join(dir, 'test.sqlite') };
@@ -21,10 +22,10 @@ test('tunnel service config stays explicit loopback, unbound and read-only', t =
 });
 test('private service file rejects symlinks, hardlinks, loose modes and nonregular files',t=>{
   const {file,dir}=fixture(t); assert.equal(readServiceKeyDigest(file).length,32);
-  fs.chmodSync(file,0o644);assert.throws(()=>readServiceKeyDigest(file));fs.chmodSync(file,0o600);
-  const link=path.join(dir,'link');fs.symlinkSync(file,link);assert.throws(()=>readServiceKeyDigest(link));
+  fixtureChmodSync(file,0o644);assert.throws(()=>readServiceKeyDigest(file));fixtureChmodSync(file,0o600);
+  const link=path.join(dir,'link');fixtureSymlinkSync(file,link);assert.throws(()=>readServiceKeyDigest(link));
   fs.unlinkSync(link);fs.linkSync(file,link);assert.throws(()=>readServiceKeyDigest(file));fs.unlinkSync(link);
-  fs.chmodSync(dir,0o755);assert.throws(()=>readServiceKeyDigest(file));fs.chmodSync(dir,0o700);
+  fixtureChmodSync(dir,0o755);assert.throws(()=>readServiceKeyDigest(file));fixtureChmodSync(dir,0o700);
   assert.throws(()=>readServiceKeyDigest(dir));
 });
 test('custom service header rejects duplicates, non-loopback, bearer and claimed identities without network',async t=>{
@@ -69,7 +70,7 @@ test('readiness rejects mixed configuration before attempting credential file re
   }
 });
 test('service key path traversal rejects intermediate directory symlinks', t => {
-  const {dir,file}=fixture(t);const alias=path.join(dir,'alias');fs.symlinkSync(dir,alias);
+  const {dir,file}=fixture(t);const alias=path.join(dir,'alias');fixtureSymlinkSync(dir,alias);
   assert.throws(()=>readServiceKeyDigest(path.join(alias,path.basename(file))));
   assert.throws(()=>readServiceKeyDigest(dir+'/../'+path.basename(dir)+'/key'));
 });

@@ -1,3 +1,4 @@
+import { cleanupPrivateFixture, beforeFixtureCleanup, privateMkdtempSync, fixtureChmodSync } from '../../dot-qq-bridge/packages/dot-bridge-platform/test-fixtures.js';
 import { makePublicRequester } from '../src/network.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -11,7 +12,7 @@ import { createPersistentService } from '../src/service.js';
 import { verifyIdentityEvidence, importVerifiedIdentity } from '../src/identity-binding.js';
 const fixtureSecret = 'synthetic-app-secret-not-real';
 function fixture(t) {
- const dir=fs.mkdtempSync(path.join(os.tmpdir(),'lark-live-'));fs.chmodSync(dir,0o700);t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+ const dir=privateMkdtempSync(path.join(os.tmpdir(),'lark-live-'));fixtureChmodSync(dir,0o700);cleanupPrivateFixture(t,dir);
  const paired={version:1,status:'paired',appId:'cli_0123456789abcdef',appSecret:fixtureSecret,tenantKey:'tenant',ownerOpenId:'owner',ownerChatId:'chat'};
  const credentials=path.join(dir,'paired.json');fs.writeFileSync(credentials,JSON.stringify(paired),{mode:0o600});
  const key=path.join(dir,'key');fs.writeFileSync(key,Buffer.alloc(32,7).toString('base64url'),{mode:0o600});
@@ -21,7 +22,7 @@ function fixture(t) {
 test('explicit live files permit pending callback catalog but no unapproved startup or subscriptions',async t=>{
  const {env}=fixture(t);const c=readConfig(env);assert.equal(c.tunnelServiceOperation,'live');assert.equal(c.callbackHosts.length,0);
  assert.throws(()=>readTunnelReadinessConfig(env));assert.throws(()=>createApp(c),/approval/);assert.equal(fs.existsSync(c.dbPath),false);
- let outbound=0;const app=createApp(c,{approvedLive:true,worker:false,send:async()=>{outbound++;throw Error('network forbidden');}});t.after(()=>app.close());
+ let outbound=0;const app=createApp(c,{approvedLive:true,worker:false,send:async()=>{outbound++;throw Error('network forbidden');}});beforeFixtureCleanup(t,()=>app.close());
  const principal={id:c.principal,validUntil:Date.now()+10000};assert.equal((await app.bridge.rpc('events/list',{},principal)).events[0].name,'lark.message.created');
  await assert.rejects(app.bridge.rpc('events/subscribe',{name:'lark.message.created',arguments:{conversation:'owner'},delivery:{mode:'webhook',url:'https://callback.example/path',secret:'whsec_'+Buffer.alloc(32,8).toString('base64')}},principal),e=>e.data.reason==='callback_policy_required'&&e.data.callback_hostname==='callback.example'&&!JSON.stringify(e).includes('/path'));
  await app.larkRuntime.start();assert.equal(outbound,0);assert.equal(app.larkRuntime.status(),'disabled');

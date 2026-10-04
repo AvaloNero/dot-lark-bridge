@@ -1,3 +1,4 @@
+import { privateMkdtempSync, fixtureChmodSync } from '../../dot-qq-bridge/packages/dot-bridge-platform/test-fixtures.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -17,7 +18,7 @@ function message(text, time = Date.now(), changes = {}) {
         create_time: String(time), content: JSON.stringify({ text }), ...changes } } };
 }
 function harness(t, options = {}) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'dot-lark-readiness-test-')); fs.chmodSync(directory, 0o700);
+  const directory = privateMkdtempSync(path.join(os.tmpdir(), 'dot-lark-readiness-test-')); fixtureChmodSync(directory, 0o700);
   t.after(() => fs.rmdirSync(directory));
   const reports = [], saved = [], controller = new AbortController();
   let transportReport, dispatcher, starts = 0, closes = 0;

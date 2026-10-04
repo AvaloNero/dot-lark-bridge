@@ -5,17 +5,23 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { BridgeError, canonical, hash } from './common.js';
 import { Vault } from './signatures.js';
+import { windowsPrivateDatabase, windowsPrivateDirectory } from '../../dot-qq-bridge/packages/dot-bridge-platform/index.js';
 
 export class Store {
   constructor(config) {
     validateLiveConfig(config);
     this.config = config;
     this.vault = new Vault(config.storageKey);
-    if (config.dbPath !== ':memory:') {
+    if (config.dbPath !== ':memory:' && process.platform === 'win32') {
+      if (config.authMode !== 'tunnel-service') windowsPrivateDirectory(path.dirname(config.dbPath), { create: true }).close();
+      this.privatePath = windowsPrivateDatabase(config.dbPath, { create: true });
+    } else if (config.dbPath !== ':memory:') {
       fs.mkdirSync(path.dirname(config.dbPath), { recursive: true, mode: 0o700 });
       if (!fs.existsSync(config.dbPath)) fs.closeSync(fs.openSync(config.dbPath, 'wx', 0o600));
     }
-    this.db = new DatabaseSync(config.dbPath);
+    try { this.db = new DatabaseSync(this.privatePath?.path ?? config.dbPath); }
+    catch (error) { this.privatePath?.close(); throw error; }
+    try {
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;
       CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS subscriptions (
@@ -38,7 +44,6 @@ export class Store {
       CREATE TABLE IF NOT EXISTS replays (id TEXT PRIMARY KEY, expires INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS rates (kind TEXT NOT NULL, at INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS rate_window ON rates(kind,at);`);
-    try {
       const check = this.get('SELECT value FROM metadata WHERE key=?', 'vault');
       if (check) this.vault.open(check.value, 'metadata');
       else this.run('INSERT INTO metadata VALUES (?,?)', 'vault', this.vault.seal({ version: 1 }, 'metadata'));
@@ -51,7 +56,7 @@ export class Store {
       const existing = this.get('SELECT value FROM metadata WHERE key=?', 'binding');
       if (existing && existing.value !== binding) throw new Error('Stored owner/AppID/principal binding differs; do not reuse this database for a different identity');
       if (!existing && config.larkAppId && config.ownerOpenId && config.tenantKey && config.ownerChatId && config.principal) this.run('INSERT INTO metadata VALUES (?,?)', 'binding', binding);
-    } catch (error) { this.db.close(); throw error; }
+    } catch (error) { try { this.db.close(); } finally { this.privatePath?.close(); } throw error; }
   }
   get(sql, ...params) { return this.db.prepare(sql).get(...params); }
   all(sql, ...params) { return this.db.prepare(sql).all(...params); }
@@ -194,5 +199,5 @@ export class Store {
       this.run('DELETE FROM rates WHERE at<=?', now - 60000);
     });
   }
-  close() { this.db.close(); }
+  close() { try { this.db.close(); } finally { this.privatePath?.close(); } }
 }

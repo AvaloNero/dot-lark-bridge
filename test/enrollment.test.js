@@ -1,3 +1,4 @@
+import { privateMkdtempSync, fixtureChmodSync, assertPrivateFixture } from '../../dot-qq-bridge/packages/dot-bridge-platform/test-fixtures.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -6,7 +7,7 @@ import path from 'node:path';
 import { enrollExistingApp } from '../src/enrollment.js';
 import { loadCredentials } from '../src/credentials.js';
 const appId = 'cli_0123456789abcdef', secret = 'fixture-app-secret-never-real';
-function temporary() { const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-enroll-fixture-')); fs.chmodSync(directory, 0o700); return directory; }
+function temporary() { const directory = privateMkdtempSync(path.join(os.tmpdir(), 'lark-enroll-fixture-')); fixtureChmodSync(directory, 0o700); return directory; }
 
 test('persistent enrollment checks both approvals and destination before registration', async () => {
   const directory = temporary(), credentialsFile = path.join(directory, 'registered.json'); let calls = 0;
@@ -29,7 +30,7 @@ test('enrollment saves exactly approved existing-app credentials privately and n
       } } });
     assert.equal(result.enrollment_completed, true); assert.equal(result.service_started, false); assert.equal(result.pairing_required, true);
     assert.equal(result.storage_protection, 'private_file_permissions_not_encryption');
-    assert.equal(fs.statSync(credentialsFile).mode & 0o777, 0o600); assert.equal(loadCredentials(credentialsFile).appSecret, secret);
+    assertPrivateFixture(assert, credentialsFile, 0o600); assert.equal(loadCredentials(credentialsFile).appSecret, secret);
     assert.throws(() => loadCredentials(credentialsFile, { paired: true }));
     assert.equal(JSON.stringify(reports).includes(secret), false);
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }

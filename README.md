@@ -87,6 +87,11 @@ npm.cmd start
 
 官方参考：[OpenAI MCP Events](https://developers.openai.com/plugins/build/mcp-events)、[飞书 Node SDK](https://github.com/larksuite/node-sdk)。官方协议支持此桥接方式；账户开通、当前 dot 的实际订阅位置和模型行为仍须真实联调验收。
 
+Windows 原生私有文件、数据库和模式锁使用同级 QQ 的
+[安全平台层](../dot-qq-bridge/packages/dot-bridge-platform/README.md)；有限时长启动与停止见
+[启动器说明](../dot-qq-bridge/tools/tunnel-stack/README.md)。需要已有 Python 与本地 NTFS；
+Linux 原有分支保留。Windows 离线结果不代表 Linux 或真实 dot 消息验收。
+
 ## 云环境代理兼容
 
 固定官方平台请求已增加独立代理路径；MCP 回调与 OAuth 仍保留原 IP 固定检查。网络边界、测试和剩余限制见 [云环境代理支持](docs/cloud-proxy.md)。这不代表当前 dot 或真实平台已接通。

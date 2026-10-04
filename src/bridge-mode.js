@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { hash } from './common.js';
+import { windowsModeLock } from '../../dot-qq-bridge/packages/dot-bridge-platform/index.js';
 export const BRIDGE_MODES = Object.freeze(['tunnel', 'sites']);
 
 export function readBridgeMode(env = process.env, { required = false } = {}) {
@@ -34,6 +35,10 @@ export function createSelectedRuntime(mode, { tunnel, sites }) {
 export function acquireModeLock(directory, channel, appId, mode) {
   if (typeof directory !== 'string' || !path.isAbsolute(directory) || !['qq', 'lark'].includes(channel) ||
       !/^[a-zA-Z0-9_-]{1,128}$/.test(appId ?? '') || !BRIDGE_MODES.includes(mode)) throw new Error('Invalid shared mode lock');
+  if (process.platform === 'win32') {
+    try { return windowsModeLock(directory, `${hash(`${channel}:${appId}`)}.lock`, { nonce: randomUUID(), mode, pid: process.pid }); }
+    catch { throw new Error('Shared mode lock is unavailable or unsafe'); }
+  }
   for (let current = path.resolve(directory); ; current = path.dirname(current)) {
     if (fs.existsSync(current) && fs.lstatSync(current).isSymbolicLink()) throw new Error('Mode lock path contains symlink');
     if (path.dirname(current) === current) break;
