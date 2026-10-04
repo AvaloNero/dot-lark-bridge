@@ -77,7 +77,7 @@ test('real live challenge and event use injected managed adapter without direct 
  const config=live(t),now=Date.now();const kinds=[];let direct=0,lookups=0;
  const managedAdapter={async send(target,options){
   assert.equal(target.hostname,'receiver.example.com');assert.deepEqual(target.addresses,[{address:'8.8.8.8',family:4}]);assert.equal(target.tls.rejectUnauthorized,true);
-  assert.equal(target.destinationBinding,'delegated_to_adapter');await options.beforeConnect();
+  assert.equal(target.destinationBinding,'delegated_unverified');await options.beforeConnect();
   const payload=JSON.parse(options.body.toString());kinds.push(payload.type==='verification'?'challenge':'event');
   return {status:200,headers:{'content-type':'application/json'},body:Buffer.from(JSON.stringify(payload.type==='verification'?{challenge:payload.challenge}:{}))};
  }};

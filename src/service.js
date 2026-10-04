@@ -1,4 +1,4 @@
-import { safeCallbackTransportStatus } from './network.js';
+import { callbackTransportStatus, createServiceSender } from './network.js';
 import { assertTunnelServiceConfig, tunnelLive } from './tunnel-service-auth.js';
 import { createApp } from './server.js';
 import { createSitesRuntime } from './sites-runtime.js';
@@ -13,12 +13,15 @@ const STATES = new Set(['disabled', 'connecting', 'reconnecting', 'connected', '
 // timeout auto-discards its credentials. An approved private mount owns storage.
 export function createPersistentService(config, { approved = false, appFactory = createApp, sitesFactory = createSitesRuntime, modeLock = acquireModeLock,
   emit = record => process.stdout.write(JSON.stringify(record) + '\n'), clock = Date.now,
-  heartbeatMs = 30000, schedule = setInterval, unschedule = clearInterval } = {}) {
+  heartbeatMs = 30000, schedule = setInterval, unschedule = clearInterval, send } = {}) {
   if (!approved) throw new Error('Persistent service requires explicit approval');
   bridgeModePlan(config.bridgeMode);
   if (config.authMode === 'tunnel-service') assertTunnelServiceConfig(config);
   if ((config.bridgeMode === 'tunnel' ? !(['oauth'].includes(config.authMode) || (config.authMode === 'tunnel-service' && config.tunnelServiceOperation === 'live')) : config.authMode !== 'deny') || config.larkTransport !== 'long-connection') throw new Error('Production OAuth and transport required');
   if (!Number.isInteger(heartbeatMs) || heartbeatMs < 1000 || heartbeatMs > 300000) throw new Error('Invalid heartbeat interval');
+  send ??= createServiceSender();
+  if (typeof send !== 'function') throw new TypeError('Invalid service sender');
+  const preflight = () => ({ callback_transport: callbackTransportStatus(send), network_checked: false });
   let app, timer, releaseModeLock, lifecycle = 'created', startedAt, previousState, closing, startupSettled, settleStartup;
   const counts = { connects: 0, reconnects: 0, reconnecting: 0, failures: 0 };
   const log = (event, fields = {}) => {
@@ -28,7 +31,7 @@ export function createPersistentService(config, { approved = false, appFactory =
   const snapshot = () => {
     const rawState = app?.larkRuntime.status(), state = STATES.has(rawState) ? rawState : 'unknown';
     const value = app?.readiness() ?? {};
-    return { callback_transport: safeCallbackTransportStatus(value.callback_transport), mode: config.bridgeMode, lifecycle, uptime_seconds: startedAt === undefined ? 0 : Math.max(0, Math.floor((clock() - startedAt) / 1000)),
+    return { callback_transport: callbackTransportStatus(send), mode: config.bridgeMode, lifecycle, uptime_seconds: startedAt === undefined ? 0 : Math.max(0, Math.floor((clock() - startedAt) / 1000)),
       gateway_state: state, bridge_configuration_ready: value.bridge_configuration_ready === true,
       mcp_subscription_active: value.mcp_subscription_active === true, gateway_connected: value.gateway_connected === true,
       ready_for_delivery: value.ready_for_delivery === true, end_to_end_verified: false, ...counts };
@@ -49,14 +52,14 @@ export function createPersistentService(config, { approved = false, appFactory =
     if (event === 'lark_connection_failed') counts.failures++;
     log(event, { end_to_end_verified: false });
   }
-  return { snapshot,
+  return { snapshot, preflight,
     async start() {
       if (lifecycle !== 'created') throw new Error('Service cannot start twice');
       startupSettled = new Promise(resolve => { settleStartup = resolve; });
       lifecycle = 'starting'; startedAt = clock(); log('service_starting');
       try {
         releaseModeLock = modeLock(config.bridgeLockDirectory, 'lark', config.larkAppId, config.bridgeMode);
-        app = createSelectedRuntime(config.bridgeMode, { tunnel: () => appFactory(config, { report, approvedLive: tunnelLive(config) }), sites: () => sitesFactory(config, { report }) });
+        app = createSelectedRuntime(config.bridgeMode, { tunnel: () => appFactory(config, { report, approvedLive: tunnelLive(config), send }), sites: () => sitesFactory(config, { report, send }) });
         timer = schedule(observe, heartbeatMs); timer?.unref?.();
         await app.listen();
         if (lifecycle === 'starting') { lifecycle = 'running'; log('service_listening', snapshot()); observe(); }

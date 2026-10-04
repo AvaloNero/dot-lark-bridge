@@ -1,3 +1,4 @@
+import { checkedOptions, normalizeRequesterOptions } from './requester-options.js';
 import { makeCallbackTransport, projectCallbackTransportStatus, TRANSPORT_ERROR_CODES } from '../../dot-qq-bridge/packages/dot-bridge-transport/index.js';
 import { configuredProviderProxy, makeProviderRequester } from './provider-network.js';
 import https from 'node:https';
@@ -41,8 +42,11 @@ export async function resolveDestination(raw, hosts, lookup = dnsLookup) {
   }
   return { url, answers };
 }
-export function makePublicRequester({ lookup = dnsLookup, request = https.request, timeoutMs = 10000, maxBytes = 262144, proxyEnv = process.env, providerTimeoutMs = 30000, providerSend = makeProviderRequester({ env: proxyEnv, timeoutMs: providerTimeoutMs, maxBytes }), callbackSend, managedAdapter, callbackTimeoutMs = 10000, callbackMaxBytes = 8192 } = {}) {
-  const callback = callbackSend ?? makeCallbackTransport({ lookup, request, timeoutMs: callbackTimeoutMs, maxBytes: callbackMaxBytes, proxyEnv, managedAdapter });
+export function makePublicRequester(options = {}) {
+  const { lookup = dnsLookup, request = https.request, timeoutMs = 10000, maxBytes = 262144, proxyEnv = process.env, providerTimeoutMs = 30000,
+    providerSend = makeProviderRequester({ env: proxyEnv, timeoutMs: providerTimeoutMs, maxBytes }), callbackTransport, managedAdapter,
+    callbackTimeoutMs = 10000, callbackMaxBytes = 8192 } = normalizeRequesterOptions(options);
+  const callback = callbackTransport ?? makeCallbackTransport({ lookup, request, timeoutMs: callbackTimeoutMs, maxBytes: callbackMaxBytes, proxyEnv, managedAdapter });
   const send = async function send(raw, { method = 'POST', headers = {}, body = Buffer.alloc(0), hosts, beforeConnect = () => {}, purpose, signal }) {
     if (purpose === 'callback') {
       let cancelled = false;
@@ -92,6 +96,7 @@ export function makePublicRequester({ lookup = dnsLookup, request = https.reques
   send.callbackTransportStatus = () => {
     try { return safeCallbackTransportStatus(typeof callback.preflight === 'function' ? callback.preflight() : undefined); } catch { return safeCallbackTransportStatus(undefined); }
   };
+  send.callbackPreflight = send.callbackTransportStatus;
   return send;
 }
 
@@ -102,4 +107,14 @@ export { TRANSPORT_ERROR_CODES };
 
 export function safeCallbackTransportStatus(value) {
   try { return projectCallbackTransportStatus(value); } catch { return { ready: false, mode: 'blocked', reason: 'transport_unverified', proxy_configured: null, destination_binding: 'unverified', network_checked: false }; }
+}
+
+// A launcher may supply a reviewed code factory, never a module name from env.
+// Construct once and pass the returned sender to both preflight and service.
+export function createServiceSender(options = {}) {
+  const { proxyEnv = process.env, requesterFactory = makePublicRequester } = checkedOptions(options, ['proxyEnv', 'requesterFactory'], 'Invalid service sender options');
+  if (typeof requesterFactory !== 'function') throw new TypeError('Invalid service requester factory');
+  const send = requesterFactory({ proxyEnv });
+  if (typeof send !== 'function') throw new TypeError('Invalid service sender');
+  return send;
 }
