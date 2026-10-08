@@ -122,6 +122,8 @@ test('renewable shared session waits for owner, renews only identical binding an
  const principal=()=>({id:'tunnel-owner:dot-bridge',validUntil:now+3600000});
  try{
   now+=16*60000;assert.equal(callbacks,0);
+  assert.equal(session.setup().callback_transport.reason,'awaiting_subscription');assert.equal(session.setup().callback_transport.ready,false);assert.equal(session.setup().callback_transport.destination_binding,'unverified');
+  await assert.rejects(session.subscribe(input,{id:'stranger',validUntil:now+60000}));assert.equal(callbacks,0);
   const first=await session.subscribe(input,principal());assert.equal(callbacks,1);assert.equal(session.setup().pending_message,null);
   now+=61*60000;
   await assert.rejects(session.receive(event(now,'before renewal')));
@@ -132,7 +134,8 @@ test('renewable shared session waits for owner, renews only identical binding an
   const before=session.readMessage('m',principal()).reply_deadline;assert.deepEqual(session.setup().pending_message,{message_id:'m',reply_deadline:before});
   await assert.rejects(session.subscribe(input,principal()));
   assert.equal(session.readMessage('m',principal()).reply_deadline,before);
-  now=Date.parse(before)+1;assert.throws(()=>session.readMessage('m',principal()));assert.equal(session.setup().pending_message,undefined);
+  now=Date.parse(before)+1;assert.throws(()=>session.readMessage('m',principal()));assert.equal(session.setup().pending_message,undefined);assert.equal(session.setup().callback_transport.reason,'scope_expired');
+  session.close();assert.equal(session.setup().callback_transport.reason,'scope_closed');
  }finally{session.close();}
 });
 

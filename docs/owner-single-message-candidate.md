@@ -126,3 +126,22 @@ is eligible. This read does not extend its deadline or consume a reply budget.
 The aggregate exposes the same metadata through `check_lark_readiness`; ordinary
 bridge readiness and the public tool names remain unchanged. Metadata lives in
 the existing process only and does not recover a terminated process's memory.
+
+
+## Callback scope evidence
+
+Before a lease exists, the waiting experiment reports `awaiting_subscription`,
+with `ready: false`, `destination_binding: unverified` and
+`network_checked: false`. Expiry and closure have separate `scope_expired` and
+`scope_closed` reasons. Ordinary managed-proxy policy failures remain
+`proxy_policy_unverified`; these lifecycle labels do not verify network safety.
+
+The existing service-key authentication identifies the fixed local owner.
+Before any callback connection, the session validates the subscription's exact
+HTTPS URL, signing-secret format and finite authenticated lease. The sender
+then binds that full URL and subscription ID before CONNECT; renewal requires
+the same URL and secret. This proves consistency with the authenticated
+subscription. It does not independently attest that an initially supplied URL
+belongs to a particular dot or platform: any authorized holder of this personal
+Tunnel/service key can choose that initial destination. The proxy's final
+resolved IP remains unverified. No change to these labels expands authority.
