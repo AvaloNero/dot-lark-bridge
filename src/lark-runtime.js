@@ -1,3 +1,4 @@
+import { ownerScopedProxy } from './callback-mode.js';
 import { configuredProviderProxy, createProviderProxyAgent } from './provider-network.js';
 import * as lark from '@larksuiteoapi/node-sdk';
 import https from 'node:https';
@@ -60,16 +61,17 @@ export function createVerifiedLarkDispatcher(config, handler, { sdk = lark, repo
 
 export function validFeishuServiceHost(host) { return typeof host === 'string' && /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+feishu\.cn$/.test(host); }
 
-export function createFeishuAgent(lookup = dnsLookup, { proxyEnv = process.env, ca } = {}) {
+export function createFeishuAgent(lookup = dnsLookup, { proxyEnv = process.env, ca, authorize = () => {} } = {}) {
   if (configuredProviderProxy(proxyEnv)) return createProviderProxyAgent({ env: proxyEnv, ca,
-    allowedHost: validFeishuServiceHost });
-  return new https.Agent({ keepAlive: false, rejectUnauthorized: true,
+    allowedHost: host => {authorize();return validFeishuServiceHost(host);} });
+  class ScopedAgent extends https.Agent {addRequest(req,options){authorize();return super.addRequest(req,options);}}
+  return new ScopedAgent({ keepAlive: false, rejectUnauthorized: true,
     lookup(hostname, options, callback) {
       (async () => {
-        if (!validFeishuServiceHost(hostname)) throw new Error('Unexpected websocket hostname');
+        authorize();if (!validFeishuServiceHost(hostname)) throw new Error('Unexpected websocket hostname');
         const answers = await lookup(hostname, { all: true, verbatim: true });
         if (!answers.length || answers.length > 32 || answers.some(answer => !publicAddress(answer.address))) throw new Error('Non-public websocket address');
-        if (options.all) callback(null, answers);
+        authorize();if (options.all) callback(null, answers);
         else callback(null, answers[0].address, answers[0].family);
       })().catch(error => callback(error));
     }
@@ -86,7 +88,7 @@ export function createLarkRuntime(config, store, clock = Date.now, { sdk = lark,
     const sub = store.activeSubscription(clock());
     if (!callbackTransportStatus(send).ready) return false;
     if (!sub || sub.principal !== config.principal || sub.expires <= clock()) return false;
-    try { destinationUrl(sub.url, config.callbackHosts); return true; } catch { return false; }
+    try { destinationUrl(sub.url,config.callbackHosts.length?config.callbackHosts:ownerScopedProxy(config)?[new URL(sub.url).hostname]:[]); return true; } catch { return false; }
   };
   const runtime = {
     status: () => connection?.status() ?? 'disabled',
@@ -95,7 +97,7 @@ export function createLarkRuntime(config, store, clock = Date.now, { sdk = lark,
       if (config.authMode !== 'oauth' && !gated) throw new Error('Live Feishu transport requires OAuth or explicit live tunnel mode');
       if (gated && !allowed()) return;
       if (connection || pending || clock() < nextAttempt) return pending;
-      connection = createLarkConnection(config, dispatcher, { sdk, report, send });
+      connection = createLarkConnection(config, dispatcher, { sdk, report, send, authorize: () => {if(gated&&(!allowed()||closed||isStopping()))throw new BridgeError('Live subscription is inactive',{code:-32012});} });
       const selected = connection;
       pending = selected.start().catch(() => {
         selected.close(); if (connection === selected) connection = undefined;
@@ -116,9 +118,9 @@ export function createLarkRuntime(config, store, clock = Date.now, { sdk = lark,
 
 // Authenticated official transport only; no HTTP ingress. Also used by the
 // separately gated operator pairing process, which exposes no MCP endpoint.
-export function createLarkConnection(config, dispatcher, { sdk = lark, report = () => {}, send, autoReconnect = true, discoveryTimeoutMs = 30000, handshakeTimeoutMs = 10000 } = {}) {
+export function createLarkConnection(config, dispatcher, { sdk = lark, report = () => {}, send, autoReconnect = true, discoveryTimeoutMs = 30000, handshakeTimeoutMs = 10000, authorize = () => {} } = {}) {
   const request = send ?? makePublicRequester({ timeoutMs: discoveryTimeoutMs, providerTimeoutMs: discoveryTimeoutMs });
-  let client, agent, stopping = false;
+  let client, agent, stopping = false;const controller=new AbortController();
   return {
     status() { return client?.getConnectionStatus().state ?? 'disabled'; },
     async start() {
@@ -133,10 +135,10 @@ export function createLarkConnection(config, dispatcher, { sdk = lark, report = 
         report('lark_discovery_started');
         let response;
         try { response = await request(options.url, { purpose: 'provider', hosts: ['open.feishu.cn'], headers: { ...options.headers, 'Content-Type': 'application/json' },
-          body: Buffer.from(JSON.stringify(options.data)), beforeConnect() { if (stopping) throw new Error('Runtime stopped'); } });
+          body: Buffer.from(JSON.stringify(options.data)), signal:controller.signal, beforeConnect() { if (stopping) throw new Error('Runtime stopped');authorize(); } });
         } catch (error) { report('lark_discovery_failed'); throw error; }
         report('lark_discovery_http_received');
-        if (stopping) throw new Error('Runtime stopped during discovery');
+        if (stopping) throw new Error('Runtime stopped during discovery');authorize();
         if (response.status !== 200) { report('lark_discovery_http_rejected'); throw new Error('SDK endpoint discovery rejected'); }
         let result;
         try { result = JSON.parse(response.body.toString('utf8')); }
@@ -156,13 +158,13 @@ export function createLarkConnection(config, dispatcher, { sdk = lark, report = 
         return result;
       } };
       if (stopping) return;
-      agent = createFeishuAgent();
+      authorize();agent = createFeishuAgent(undefined,{authorize});
       client = new sdk.WSClient({ appId: config.larkAppId, appSecret: config.larkAppSecret, domain: sdk.Domain.Feishu, agent,
         httpInstance, logger: safeSdkLogger(report), loggerLevel: sdk.LoggerLevel.warn,
         autoReconnect, handshakeTimeoutMs, onReady() { report('lark_connected'); }, onReconnected() { report('lark_reconnected'); }, onReconnecting() { report('lark_reconnecting'); },
         onError() { report('lark_connection_failed'); } });
       await client.start({ eventDispatcher: dispatcher });
     },
-    close() { stopping = true; client?.close({ force: true }); agent?.destroy(); }
+    close() { stopping = true;controller.abort(); client?.close({ force: true }); agent?.destroy(); }
   };
 }

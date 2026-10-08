@@ -1,3 +1,4 @@
+import { ownerScopedProxy, assertCallbackMode } from './callback-mode.js';
 import { larkSetupTool, callbackPreflight } from './setup-preflight.js';
 import { tunnelReadiness, tunnelLive } from './tunnel-service-auth.js';
 import { randomBytes } from 'node:crypto';
@@ -35,8 +36,9 @@ export const toolDefinitions = [
 ];
 
 export class Bridge {
-  constructor(config, { clock = Date.now, send, store = new Store(config) }) {
-    this.config = config; this.clock = clock; this.send = send; this.store = store;
+  constructor(config, { clock = Date.now, send, store }) {
+    assertCallbackMode(config);
+    this.config = config; this.clock = clock; this.send = send; this.store = store ?? new Store(config);
     this.sendLark = createLarkSender(config, send, clock);
     this.running = false;
   }
@@ -45,9 +47,9 @@ export class Bridge {
     return c.authMode !== 'deny' && !!(c.larkAppId && c.larkAppSecret && c.ownerOpenId && c.tenantKey && c.ownerChatId && c.principal );
   }
   callbackTransportStatus() { return callbackTransportStatus(this.send); }
-  ready() { return this.bindingReady() && !!this.config.callbackHosts.length && (!tunnelLive(this.config) || this.callbackTransportStatus().ready); }
+  ready() { return this.bindingReady() && (!!this.config.callbackHosts.length || ownerScopedProxy(this.config)) && (!tunnelLive(this.config) || this.callbackTransportStatus().ready); }
   callbackAuthorized(subscription) {
-    try { destinationUrl(subscription?.url, this.config.callbackHosts); return true; } catch { return false; }
+    try { const hosts=ownerScopedProxy(this.config)&&!this.config.callbackHosts.length?[new URL(subscription.url).hostname]:this.config.callbackHosts;destinationUrl(subscription?.url,hosts);return !ownerScopedProxy(this.config)||subscription.principal===this.config.principal; } catch { return false; }
   }
   authorizeStoredMessage(id, principal, now) {
     const message = this.store.authorizeMessage(id, principal, now);
@@ -73,8 +75,9 @@ export class Bridge {
     string(params.delivery.url, 2048);
     const candidate = new URL(params.delivery.url);
     destinationUrl(params.delivery.url, [candidate.hostname]);
-    if (!this.config.callbackHosts.includes(candidate.hostname)) throw new BridgeError('Callback hostname requires owner-approved policy', { code: -32015, data: { reason: 'callback_policy_required', callback_hostname: candidate.hostname } });
-    destinationUrl(params.delivery.url, this.config.callbackHosts);
+    if ((!ownerScopedProxy(this.config)||this.config.callbackHosts.length)&&!this.config.callbackHosts.includes(candidate.hostname)) throw new BridgeError('Callback hostname requires owner-approved policy', { code: -32015, data: { reason: 'callback_policy_required', callback_hostname: candidate.hostname } });
+    const callbackHosts=this.config.callbackHosts.length?this.config.callbackHosts:[candidate.hostname];
+    destinationUrl(params.delivery.url, callbackHosts);
     webhookKey(params.delivery.secret);
     const transport = this.callbackTransportStatus();
     if (tunnelLive(this.config) && !transport.ready) throw new BridgeError('Callback transport is not ready', { code: -32015, data: { reason: transport.reason, callback_transport: transport } });
@@ -91,8 +94,9 @@ export class Bridge {
       const subscription = { id, secret: params.delivery.secret };
       let response;
       try {
-        response = await this.send(params.delivery.url, { purpose: 'callback', hosts: this.config.callbackHosts, headers: webhookHeaders(subscription, `verify_${randomBytes(16).toString('hex')}`, body, now), body, beforeConnect: () => {
+        response = await this.send(params.delivery.url, { purpose: 'callback', hosts: callbackHosts, headers: webhookHeaders(subscription, `verify_${randomBytes(16).toString('hex')}`, body, now), body, beforeConnect: () => {
           if (expires <= this.clock() || this.store.subscriptionEpoch(id) !== expectedEpoch) throw new BridgeError('Subscription verification cancelled', { code: -32012 });
+          if(ownerScopedProxy(this.config))return {principal:principal.id,url:params.delivery.url,subscription_id:id,expires,verified:false};
         } });
       } catch (error) {
         if (error instanceof BridgeError && error.code === -32012) throw new BridgeError('Subscription verification cancelled', { code: -32012 });
@@ -147,7 +151,9 @@ export class Bridge {
         object(params, ['name', 'arguments', '_meta'], ['name', 'arguments']);
         if (params.name === 'check_lark_setup' && tunnelLive(this.config)) {
           object(params.arguments, ['callback_url']);
-          return toolResult(callbackPreflight(this.config, this.bindingReady(), params.arguments.callback_url, this.callbackTransportStatus()));
+          const result=callbackPreflight(this.config, this.bindingReady(), params.arguments.callback_url, this.callbackTransportStatus());
+          if(ownerScopedProxy(this.config)&&result.callback_transport.mode==='owner_scoped_proxy'){const sub=this.store.activeSubscription(this.clock());result.pending_messages=sub&&this.callbackAuthorized(sub)?this.store.pendingMessages(principal.id,this.clock()):[];}
+          return toolResult(result);
         }
         if (params.name === 'get_lark_message') {
           object(params.arguments, ['message_id'], ['message_id']); string(params.arguments.message_id, 256);
@@ -188,7 +194,7 @@ export class Bridge {
         const body = Buffer.from(JSON.stringify(event));
         if (body.length > 262144) throw new BridgeError('Event exceeds payload limit');
         this.store.run('UPDATE messages SET attempted_at=? WHERE id=?', now, message.id);
-        const response = await this.send(subscription.url, { purpose: 'callback', hosts: this.config.callbackHosts, headers: webhookHeaders(subscription, event.eventId, body, this.clock()), body,
+        const response = await this.send(subscription.url, { purpose: 'callback', hosts: this.config.callbackHosts.length?this.config.callbackHosts:[new URL(subscription.url).hostname], headers: webhookHeaders(subscription, event.eventId, body, this.clock()), body,
           beforeConnect: () => this.authorizeJob(job) });
         if (response.status >= 200 && response.status < 300) this.store.finish(job, 'delivered');
         else {
@@ -212,17 +218,25 @@ export class Bridge {
       return true;
     } catch (error) {
       if (!job) throw error;
-      const transient = error instanceof BridgeError && error.retryable;
-      const state = error.code === -32012 ? 'cancelled' : error.uncertain ? 'uncertain' : transient && job.attempts < this.config.maxAttempts ? 'pending' : 'dead';
+      const scopedEvent=ownerScopedProxy(this.config)&&job.kind==='event';
+      if(scopedEvent&&error.data?.reason==='delivery_uncertain'){this.store.recordEventUncertain(job);return true;}
+      const notStarted=scopedEvent&&['request_busy','capacity_exceeded'].includes(error.data?.reason);
+      if(notStarted){
+        this.store.tx(()=>{this.store.run('UPDATE messages SET attempted_at=NULL WHERE id=?',job.message_id);this.store.run("UPDATE jobs SET state='pending',attempts=attempts-1,next_at=?,lease_until=NULL,lease_token=NULL WHERE id=? AND lease_token=? AND state='processing'",this.clock()+this.config.retryBaseMs,job.id,job.lease_token);});
+        return true;
+      }
+      const transient = error instanceof BridgeError && (error.retryable&&!scopedEvent);
+      const state = error.code === -32012 ? 'cancelled' : (error.uncertain || (scopedEvent&&error.code!==-32012)) ? 'uncertain' : transient && job.attempts < this.config.maxAttempts ? 'pending' : 'dead';
       const reason = error instanceof BridgeError ? error.message : 'internal_worker_error';
       this.store.finish(job, state, reason, this.clock() + Math.min(60000, this.config.retryBaseMs * 2 ** (job.attempts - 1)));
       return true;
     } finally { this.running = false; }
   }
   authorizeJob(job) {
-    const live = this.store.get('SELECT state,lease_token FROM jobs WHERE id=?', job.id);
-    if (!this.ready() || live?.state !== 'processing' || live.lease_token !== job.lease_token) throw new BridgeError('Operation cancelled before send', { code: -32012 });
+    const live = this.store.get('SELECT state,lease_token,lease_until FROM jobs WHERE id=?', job.id);
+    if (!this.ready() || live?.state !== 'processing' || live.lease_token !== job.lease_token || live.lease_until <= this.clock()) throw new BridgeError('Operation cancelled before send', { code: -32012 });
     const message = this.authorizeStoredMessage(job.message_id, this.config.principal, this.clock());
     if (message.expires <= this.clock()) throw new BridgeError('Reply deadline passed before send', { code: -32012 });
+    if(ownerScopedProxy(this.config)){const sub=this.store.subscription(message.subscription_id);return {principal:sub.principal,url:sub.url,subscription_id:sub.id,expires:Math.min(sub.expires,message.expires,live.lease_until),verified:true};}
   }
 }

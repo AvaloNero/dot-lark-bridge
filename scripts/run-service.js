@@ -1,11 +1,11 @@
-import { createServiceSender } from '../src/network.js';
+import { createFormalServiceSender } from '../src/formal-sender.js';
 import { readConfig } from '../src/config.js';
 import { createPersistentService } from '../src/service.js';
 let service;
 try {
   if (process.argv.length !== 3 || process.argv[2] !== '--confirm-persistent-service') throw new Error('Explicit production approval required');
   const config = readConfig();
-  const send = createServiceSender({ proxyEnv: process.env });
+  const send = createFormalServiceSender(config, { proxyEnv: process.env });
   service = createPersistentService(config, { approved: true, send });
   const stop = () => { service.close().catch(() => { process.exitCode = 1; }); };
   process.once('SIGINT', stop); process.once('SIGTERM', stop);

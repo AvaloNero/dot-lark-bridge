@@ -59,12 +59,13 @@ export function makePublicRequester(options = {}) {
       };
       try { return await callback(raw, { method, headers, body, hosts, beforeConnect: gate, signal }); }
       catch (error) {
+        if(error?.code==='delivery_uncertain')throw new BridgeError('Callback delivery acknowledgement unknown',{code:-32015,uncertain:true,data:{reason:'delivery_uncertain',callback_transport:callbackTransportStatus(send)}});
         if (cancelled || (error instanceof BridgeError && error.code === -32012)) throw new BridgeError('Callback operation cancelled', { code: -32012 });
         const reason = TRANSPORT_ERROR_CODES.includes(error?.code) ? error.code : 'connection_failed';
         throw new BridgeError('Callback transport rejected', { code: -32015, data: { reason, callback_transport: callbackTransportStatus(send) }, retryable: ['dns_failed','timeout','connection_failed'].includes(reason) });
       }
     }
-    if (purpose === 'provider' && configuredProviderProxy(proxyEnv)) return providerSend(raw, { method, headers, body, hosts, beforeConnect });
+    if (purpose === 'provider' && configuredProviderProxy(proxyEnv)) return providerSend(raw, { method, headers, body, hosts, beforeConnect, signal });
     // The DNS check is repeated on EVERY attempt; the vetted answers are pinned in lookup.
     let timer;
     const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(fail('Destination timeout', 'timeout')), timeoutMs); });
@@ -76,7 +77,7 @@ export function makePublicRequester(options = {}) {
     return new Promise((resolve, reject) => {
       const req = request(url, { method, headers: { ...headers, 'Content-Length': body.length }, agent: false,
         lookup: (_hostname, options, callback) => options.all ? callback(null, answers) : callback(null, answers[0].address, answers[0].family),
-        servername: url.hostname, rejectUnauthorized: true }, res => {
+        servername: url.hostname, rejectUnauthorized: true, signal }, res => {
         const chunks = [];
         let size = 0;
         res.on('data', chunk => {

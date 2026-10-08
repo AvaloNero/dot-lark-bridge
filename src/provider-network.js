@@ -51,8 +51,10 @@ export function createProviderProxyAgent({ env = process.env, allowedHost = host
   catch { throw failure('proxy_configuration'); }
 }
 export function makeProviderRequester({ env = process.env, request = https.request, timeoutMs = 10000, maxBytes = 262144, agentFactory = createProviderProxyAgent } = {}) {
-  return async (raw, { method = 'POST', headers = {}, body = Buffer.alloc(0), hosts, beforeConnect = () => {} }) => {
+  return async (raw, { method = 'POST', headers = {}, body = Buffer.alloc(0), hosts, beforeConnect = () => {}, signal }) => {
     const url = providerUrl(raw, hosts);
+    if(signal!==undefined&&!(signal instanceof AbortSignal))throw new BridgeError('Invalid provider signal');
+    if(signal?.aborted)throw new BridgeError('Provider scope stopped',{code:-32012});
     if (!['GET', 'HEAD', 'POST'].includes(method) || !Buffer.isBuffer(body) || body.length > maxBytes ||
         Object.keys(headers).some(key => ['host', 'proxy-authorization', 'connection', 'transfer-encoding'].includes(key.toLowerCase()))) throw new BridgeError('Invalid provider request');
     let agent;
@@ -63,7 +65,7 @@ export function makeProviderRequester({ env = process.env, request = https.reque
       return await new Promise((resolve, reject) => {
         let timer, req;
         const finish = (error, result) => { clearTimeout(timer); error ? reject(error) : resolve(result); };
-        try { req = request(url, { method, headers: { ...headers, 'Content-Length': body.length }, agent, servername: url.hostname, rejectUnauthorized: true }, res => {
+        try { req = request(url, { method, headers: { ...headers, 'Content-Length': body.length }, agent, servername: url.hostname, rejectUnauthorized: true, signal }, res => {
           if (res.statusCode >= 300 && res.statusCode < 400) { res.destroy(); finish(failure('redirect_rejected')); return; }
           const chunks = []; let size = 0;
           res.on('data', chunk => { size += chunk.length; if (size > maxBytes) res.destroy(failure('response_too_large')); else chunks.push(chunk); });

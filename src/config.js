@@ -1,3 +1,4 @@
+import { assertCallbackMode } from './callback-mode.js';
 import { validateLiveConfig } from './live-validation.js';
 import { randomBytes } from 'node:crypto';
 import { assertTunnelServiceConfig, readPrivateKey } from './tunnel-service-auth.js';
@@ -12,6 +13,8 @@ function number(env, key, fallback, min, max) {
 }
 export function readConfig(env = process.env) {
   const operation = env.TUNNEL_SERVICE_OPERATION || 'readiness';
+  const callbackTransportMode=env.CALLBACK_TRANSPORT_MODE||'standard';
+  assertCallbackMode({callbackTransportMode,authMode:env.AUTH_MODE,tunnelServiceOperation:operation,bridgeMode:env.BRIDGE_MODE,principal:env.TUNNEL_SERVICE_OWNER_ID});
   if (env.AUTH_MODE === 'tunnel-service') {
     if (!['readiness', 'live'].includes(operation)) throw new Error('Invalid TUNNEL_SERVICE_OPERATION');
     if (env.BRIDGE_MODE !== 'tunnel' || !['127.0.0.1','::1'].includes(env.HOST || '127.0.0.1') || env.TUNNEL_SERVICE_OWNER_ID !== 'tunnel-owner:dot-bridge' || !path.isAbsolute(env.TUNNEL_SERVICE_KEY_FILE || '')) throw new Error('Invalid tunnel mode, listener, owner or key reference');
@@ -38,6 +41,7 @@ export function readConfig(env = process.env) {
   const mode = env.AUTH_MODE || 'deny';
   if (!['deny', 'dev', 'oauth', 'tunnel-service'].includes(mode)) throw new Error('Invalid AUTH_MODE');
   const config = {
+    callbackTransportMode,
     credentialsFile: env.LARK_CREDENTIALS_FILE || '', expectedAppId: env.LARK_EXPECTED_APP_ID || '',
     bridgeMode, bridgeLockDirectory: env.BRIDGE_LOCK_DIRECTORY || '',
     sitesOrigin: env.SITES_ORIGIN || '', sitesBindingId: env.SITES_BINDING_ID || '',
@@ -56,8 +60,10 @@ export function readConfig(env = process.env) {
     subscriptionTtlMs: number(env, 'SUBSCRIPTION_TTL_SECONDS', 86400, 60, 604800) * 1000,
     queueLimit: number(env, 'QUEUE_LIMIT', 100, 1, 10000), inboundPerMinute: number(env, 'INBOUND_PER_MINUTE', 10, 1, 20),
     repliesPerMinute: number(env, 'REPLIES_PER_MINUTE', 10, 1, 20), maxAttempts: number(env, 'MAX_DELIVERY_ATTEMPTS', 5, 1, 10),
-    retryBaseMs: 1000, workerIntervalMs: 500, leaseMs: 60000, textRetentionMs: 7 * 86400000
+    retryBaseMs: 1000, workerIntervalMs: 500, leaseMs: 60000,
+    textRetentionMs: number(env, 'TEXT_RETENTION_SECONDS', 604800, 60, 604800) * 1000
   };
+  if (config.textRetentionMs < config.replyTtlMs) throw new Error('TEXT_RETENTION_SECONDS must not be shorter than REPLY_TTL_SECONDS');
   if (!['disabled', 'long-connection'].includes(config.larkTransport)) throw new Error('Invalid LARK_TRANSPORT');
   if (mode === 'tunnel-service') {
     if (env.TUNNEL_SERVICE_READINESS_ONLY && env.TUNNEL_SERVICE_READINESS_ONLY !== 'true') throw new Error('Only readiness tunnel service is supported');

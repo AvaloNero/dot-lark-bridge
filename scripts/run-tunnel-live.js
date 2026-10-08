@@ -1,4 +1,4 @@
-import { createServiceSender } from '../src/network.js';
+import { createFormalServiceSender } from '../src/formal-sender.js';
 import { readConfig } from '../src/config.js';
 import { createPersistentService } from '../src/service.js';
 import { supervisedStop } from '../../dot-qq-bridge/packages/dot-bridge-platform/supervised-stop.js';
@@ -9,7 +9,7 @@ try {
   } else {
     const config = readConfig();
     if (config.authMode !== 'tunnel-service' || config.tunnelServiceOperation !== 'live') throw new Error('Explicit live tunnel mode required');
-    const send = createServiceSender({ proxyEnv: process.env });
+    const send = createFormalServiceSender(config, { proxyEnv: process.env });
     service = createPersistentService(config, { approved: true, send });
     const stop = () => { stopSupervision(); return service.close().catch(() => { process.exitCode = 1; }); };
     stopSupervision = supervisedStop(stop);

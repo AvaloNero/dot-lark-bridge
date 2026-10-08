@@ -1,3 +1,4 @@
+import { ownerScopedProxy, assertCallbackMode } from './callback-mode.js';
 import { validateLiveConfig } from './live-validation.js';
 import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
@@ -9,7 +10,7 @@ import { windowsPrivateDatabase, windowsPrivateDirectory } from '../../dot-qq-br
 
 export class Store {
   constructor(config) {
-    validateLiveConfig(config);
+    assertCallbackMode(config);validateLiveConfig(config);
     this.config = config;
     this.vault = new Vault(config.storageKey);
     if (config.dbPath !== ':memory:' && process.platform === 'win32') {
@@ -52,10 +53,14 @@ export class Store {
       if (storedMode && storedMode.value !== mode) throw new Error('Database bridge mode differs; explicit migration required');
       if (!storedMode && mode === 'sites' && this.get('SELECT count(*) AS n FROM messages').n) throw new Error('Legacy tunnel messages require explicit migration');
       if (!storedMode) this.run('INSERT INTO metadata VALUES (?,?)', 'bridge_mode', mode);
+      const callbackMode=config.callbackTransportMode??'standard',storedCallbackMode=this.get('SELECT value FROM metadata WHERE key=?','callback_transport_mode');
+      if(storedCallbackMode&&storedCallbackMode.value!==callbackMode)throw new Error('Stored callback mode differs; explicit migration required');
+      if(!storedCallbackMode&&callbackMode==='owner-scoped-proxy'&&(this.get('SELECT count(*) AS n FROM messages').n||this.get('SELECT value FROM metadata WHERE key=?','owner_single_message:v1')))throw new Error('Use a separate formal owner database');
       const binding = canonical({ app: config.larkAppId, owner: config.ownerOpenId, tenant: config.tenantKey, chat: config.ownerChatId, principal: config.principal });
       const existing = this.get('SELECT value FROM metadata WHERE key=?', 'binding');
       if (existing && existing.value !== binding) throw new Error('Stored owner/AppID/principal binding differs; do not reuse this database for a different identity');
       if (!existing && config.larkAppId && config.ownerOpenId && config.tenantKey && config.ownerChatId && config.principal) this.run('INSERT INTO metadata VALUES (?,?)', 'binding', binding);
+      if(!storedCallbackMode)this.run('INSERT INTO metadata VALUES (?,?)','callback_transport_mode',callbackMode);
     } catch (error) { try { this.db.close(); } finally { this.privatePath?.close(); } throw error; }
   }
   get(sql, ...params) { return this.db.prepare(sql).get(...params); }
@@ -143,6 +148,16 @@ export class Store {
     }
     return message;
   }
+  pendingMessages(principal, now, limit = 10) {
+    if(principal!==this.config.principal||!Number.isInteger(limit)||limit<1||limit>10)throw new BridgeError('Pending message scope refused',{code:-32012});
+    const subscription=this.activeSubscription(now);if(!subscription)return [];
+    return this.all(`SELECT m.id AS message_id,m.expires,COALESCE(j.state,'none') AS reply_status
+      FROM messages m LEFT JOIN jobs j ON j.id=('reply:'||m.id) AND j.kind='reply'
+      WHERE m.principal=? AND m.owner=? AND m.tenant_key=? AND m.chat_id=? AND m.subscription_id=? AND m.generation=?
+        AND m.attempted_at IS NOT NULL AND m.expires>? AND COALESCE(j.state,'none') IN ('none','pending','processing')
+      ORDER BY m.received,m.rowid LIMIT ?`,principal,this.config.ownerOpenId,this.config.tenantKey,this.config.ownerChatId,subscription.id,subscription.generation,now,limit)
+      .map(row=>({message_id:row.message_id,reply_deadline:new Date(row.expires).toISOString(),reply_status:row.reply_status}));
+  }
   queueReply(id, text, principal, now) {
     return this.tx(() => {
       const message = this.authorizeMessage(id, principal, now);
@@ -166,8 +181,9 @@ export class Store {
     return this.tx(() => {
       // A crashed event delivery can be retried by eventId. A crashed Feishu reply is ambiguous.
       this.run("UPDATE jobs SET state='uncertain',last_error='worker_interrupted' WHERE kind='reply' AND state='processing' AND lease_until<=?", now);
-      this.run("UPDATE jobs SET state='pending',lease_token=NULL WHERE kind='event' AND state='processing' AND lease_until<=?", now);
-      const job = this.get("SELECT * FROM jobs WHERE state='pending' AND next_at<=? ORDER BY next_at,id LIMIT 1", now);
+      if(ownerScopedProxy(this.config))this.run("UPDATE jobs SET state='uncertain',last_error='worker_interrupted',lease_token=NULL WHERE kind='event' AND state='processing' AND lease_until<=?",now);
+      else this.run("UPDATE jobs SET state='pending',lease_token=NULL WHERE kind='event' AND state='processing' AND lease_until<=?",now);
+      const job = this.get("SELECT * FROM jobs WHERE state='pending' AND next_at<=? ORDER BY next_at,rowid LIMIT 1", now);
       if (!job) return undefined;
       const token = randomUUID();
       this.run("UPDATE jobs SET state='processing',attempts=attempts+1,lease_until=?,lease_token=? WHERE id=?", now + this.config.leaseMs, token, job.id);
@@ -176,6 +192,10 @@ export class Store {
   }
   finish(job, state, reason = null, next = 0) {
     this.run("UPDATE jobs SET state=?,last_error=?,next_at=?,lease_until=NULL,lease_token=NULL WHERE id=? AND lease_token=? AND state='processing'", state, reason, next, job.id, job.lease_token);
+  }
+  recordEventUncertain(job) {
+    // Revocation can stop future work but cannot undo a callback already on wire.
+    this.run("UPDATE jobs SET state='uncertain',last_error='delivery_uncertain',lease_until=NULL,lease_token=NULL WHERE id=? AND kind='event' AND attempts=? AND ((state='processing' AND lease_token=?) OR state='cancelled')",job.id,job.attempts,job.lease_token);
   }
   replyText(id) {
     const row = this.get('SELECT text FROM replies WHERE message_id=?', id);
@@ -192,8 +212,11 @@ export class Store {
   prune(now) {
     this.tx(() => {
       const cutoff = now - this.config.textRetentionMs;
-      this.run('UPDATE messages SET text=NULL WHERE received<? AND expires<?', cutoff, now);
-      this.run('UPDATE replies SET text=NULL WHERE created<?', cutoff);
+      this.run('UPDATE messages SET text=NULL WHERE received<? AND expires<=?', cutoff, now);
+      // A shorter retention setting must not truncate a previously stored reply
+      // window. Its original message expiry remains authoritative after restart.
+      this.run(`UPDATE replies SET text=NULL WHERE created<? AND EXISTS
+        (SELECT 1 FROM messages WHERE messages.id=replies.message_id AND messages.expires<=?)`, cutoff, now);
       // Tombstones intentionally survive text deletion to preserve durable deduplication.
       this.run('DELETE FROM replays WHERE expires<?', now);
       this.run('DELETE FROM rates WHERE at<=?', now - 60000);

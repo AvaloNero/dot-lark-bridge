@@ -1,3 +1,4 @@
+import { assertCallbackMode } from './callback-mode.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { windowsReadPrivateFile } from '../../dot-qq-bridge/packages/dot-bridge-platform/index.js';
@@ -7,6 +8,7 @@ const loopback = host => ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(host)
 export const tunnelLive = config => config.authMode === 'tunnel-service' && config.tunnelServiceOperation === 'live';
 export const tunnelReadiness = config => config.authMode === 'tunnel-service' && !tunnelLive(config);
 export function assertTunnelServiceConfig(config) {
+  assertCallbackMode(config);
   const operation = config.tunnelServiceOperation || 'readiness';
   if (!['readiness', 'live'].includes(operation) || config.bridgeMode !== 'tunnel' || !['127.0.0.1', '::1'].includes(config.host) ||
       config.publicOrigin || config.oauthIssuer || config.oauthJwksUrl || config.oauthAudience || config.devToken ||
