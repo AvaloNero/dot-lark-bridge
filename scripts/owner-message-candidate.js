@@ -1,5 +1,5 @@
 import { pathToFileURL } from 'node:url';
-export function ownerMessagePlan({waitForOwner=false}={}){if(typeof waitForOwner!=='boolean')throw new Error('Invalid owner wait mode');return{mode:'OFFLINE_OWNER_SINGLE_MESSAGE_CANDIDATE',wait_for_owner:waitForOwner,supports_wait_for_owner:true,channel:'lark',credential_read:false,provider_started:false,max_incoming:1,max_reply_attempts:1,ordinary_callback_ready:false,final_destination_ip_verified:false};}
+export function ownerMessagePlan({waitForOwner=false}={}){if(typeof waitForOwner!=='boolean')throw new Error('Invalid owner wait mode');return{mode:'OFFLINE_OWNER_SINGLE_MESSAGE_CANDIDATE',wait_for_owner:waitForOwner,supports_wait_for_owner:true,channel:'lark',credential_read:false,provider_started:false,durable_subscription_required:true,max_incoming:1,max_reply_attempts:1,ordinary_callback_ready:false,final_destination_ip_verified:false};}
 export function ownerMessageScope({waitForOwner=false,env=process.env,clock=Date.now}={}){
  if(typeof waitForOwner!=='boolean')throw new Error('Invalid owner wait mode');
  if(waitForOwner)return{waitForOwner:true};
@@ -15,14 +15,21 @@ export async function startOwnerMessageCandidate({approved=false,waitForOwner=fa
  const shared=await import('../../dot-qq-bridge/packages/dot-bridge-transport/experimental/owner-message.js');
  const [{loadCredentials},{readTunnelReadinessConfig},{makeOwnerMessageProvider},{createLarkOwnerMessageSession},{createOwnerMessageRuntime}]=await Promise.all([
   import('../src/credentials.js'),import('../src/config.js'),import('../src/owner-message-provider.js'),import('../src/owner-message-session.js'),import('../src/owner-message-runtime.js')]);
- if(!env.OWNER_MESSAGE_FIXED_REPLY||!env.LARK_EXPECTED_APP_ID||!env.LARK_CREDENTIALS_FILE||!env.BRIDGE_LOCK_DIRECTORY)throw new Error('Explicit bounded candidate configuration required');
+ if(!env.OWNER_MESSAGE_DATABASE_PATH||!env.STORAGE_KEY_FILE||!env.OWNER_MESSAGE_FIXED_REPLY||!env.LARK_EXPECTED_APP_ID||!env.LARK_CREDENTIALS_FILE||!env.BRIDGE_LOCK_DIRECTORY)throw new Error('Explicit bounded candidate configuration required');
  const authConfig=readTunnelReadinessConfig({AUTH_MODE:'tunnel-service',BRIDGE_MODE:'tunnel',TUNNEL_SERVICE_OPERATION:'readiness',TUNNEL_SERVICE_OWNER_ID:'tunnel-owner:dot-bridge',HOST:'127.0.0.1',PORT:env.OWNER_MESSAGE_PORT||'3102',TUNNEL_SERVICE_KEY_FILE:env.TUNNEL_SERVICE_KEY_FILE});
  const credentials=loadCredentials(env.LARK_CREDENTIALS_FILE,{paired:true});if(credentials.appId!==env.LARK_EXPECTED_APP_ID)throw new Error('Approved application mismatch');
- const callbackTransport=shared.makeOwnerMessageExperimentTransport({approvedOwnerMessageExperiment:true,channel:'lark',acceptAnyOwnerText:true,...scope,proxyEnv:env});
- const providerSend=makeOwnerMessageProvider({proxyEnv:env,...(scope.deadlineMs===undefined?{}:{deadlineMs:scope.deadlineMs})});
- const session=createLarkOwnerMessageSession({credentials,expectedAppId:env.LARK_EXPECTED_APP_ID,acceptAnyOwnerText:true,fixedReply:env.OWNER_MESSAGE_FIXED_REPLY,authenticatedCallbackDiscovery:true,callbackTransport,recognizeTransport:shared.ownerMessageExperimentStatus,proxyEnv:env,providerSend,...scope});
- const runtime=createOwnerMessageRuntime({session,authConfig,connectionConfig:{larkAppId:credentials.appId,larkAppSecret:credentials.appSecret,tenantKey:credentials.tenantKey,ownerOpenId:credentials.ownerOpenId,ownerChatId:credentials.ownerChatId},lockDirectory:env.BRIDGE_LOCK_DIRECTORY,...scope,providerSend,approved:true});
- try{await runtime.start();}catch{await runtime.close();throw new Error('Candidate startup refused');}
+ const {acquireModeLock}=await import('../src/bridge-mode.js');
+ const {openOwnerMessagePersistence,restoredTransportState}=await import('../src/owner-message-persistence.js');
+ const release=acquireModeLock(env.BRIDGE_LOCK_DIRECTORY,'lark',credentials.appId,'tunnel');let persistence,runtime,session;
+ try{
+  persistence=openOwnerMessagePersistence({databasePath:env.OWNER_MESSAGE_DATABASE_PATH,storageKeyFile:env.STORAGE_KEY_FILE,serviceKeyFile:env.TUNNEL_SERVICE_KEY_FILE,lockDirectory:env.BRIDGE_LOCK_DIRECTORY,credentials});
+  const checkpoint=persistence.ledger.load();
+  const callbackTransport=shared.makeOwnerMessageExperimentTransport({approvedOwnerMessageExperiment:true,channel:'lark',acceptAnyOwnerText:true,...scope,restoredState:restoredTransportState(checkpoint),proxyEnv:env});
+  const providerSend=makeOwnerMessageProvider({proxyEnv:env,...(scope.deadlineMs===undefined?{}:{deadlineMs:scope.deadlineMs})});
+  session=createLarkOwnerMessageSession({credentials,expectedAppId:env.LARK_EXPECTED_APP_ID,acceptAnyOwnerText:true,fixedReply:env.OWNER_MESSAGE_FIXED_REPLY,authenticatedCallbackDiscovery:true,callbackTransport,recognizeTransport:shared.ownerMessageExperimentStatus,proxyEnv:env,providerSend,...scope,ledger:persistence.ledger,restoredCheckpoint:checkpoint});
+  runtime=createOwnerMessageRuntime({session,authConfig,connectionConfig:{larkAppId:credentials.appId,larkAppSecret:credentials.appSecret,tenantKey:credentials.tenantKey,ownerOpenId:credentials.ownerOpenId,ownerChatId:credentials.ownerChatId},lockDirectory:env.BRIDGE_LOCK_DIRECTORY,...scope,providerSend,approved:true,modeLock:()=>release,onClose:()=>persistence.close()});
+  await runtime.start();
+ }catch{if(runtime)await runtime.close();else{session?.close();persistence?.close();release();}throw new Error('Candidate startup refused');}
  return runtime;
 }
 export function ownerMessageCliMode(args){

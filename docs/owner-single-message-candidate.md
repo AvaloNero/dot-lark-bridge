@@ -145,3 +145,38 @@ subscription. It does not independently attest that an initially supplied URL
 belongs to a particular dot or platform: any authorized holder of this personal
 Tunnel/service key can choose that initial destination. The proxy's final
 resolved IP remains unverified. No change to these labels expands authority.
+
+## Durable subscription recovery
+
+Operational launch requires stable private `OWNER_MESSAGE_DATABASE_PATH` and
+`STORAGE_KEY_FILE` references, outside the source tree and run-generation
+folders. The independent local storage key must differ from the service
+credential. The launcher acquires the existing application lock before opening
+the existing SQLite Store; its Vault encrypts the complete candidate checkpoint
+inside the metadata table, with synchronous transactions. This is payload
+encryption, not encryption of all database metadata. Directory/file checks and
+storage key loading reuse the existing private-storage guards.
+
+After callback verification, the original subscription identity, URL, signing
+secret and finite granted expiry are committed before the subscribe response.
+Renewal of the same identity updates that checkpoint before acknowledging it.
+The safe lifecycle status reports only `subscription_expires_at` and
+`subscription_persisted`, so the granted expiry need not be guessed from message
+reply deadlines. Resource shutdown preserves the grant; authenticated
+unsubscribe durably cancels it. The operator must stop the platform task when
+revoking ongoing monitoring rather than treating a server restart as revocation.
+
+An unexpired waiting grant restores the gateway without another subscribe or
+challenge. Expired grants require authenticated renewal. Event and reply attempts
+are saved before their network operation. Attempts interrupted by a restart
+become terminal uncertain and are never retried. Successful delivery restores
+only message ID, source event ID, event ID, timestamps and the original deadline:
+message text is never persisted. The read tool therefore returns `text: null`
+after restart, while the fixed reply may still be sent once within the original
+lease and message deadline. No lost historical message or old unrecorded grant
+can be reconstructed. A completed or uncertain scope does not receive a new
+single-message budget by restarting it or choosing another generation directory.
+
+This isolated single-message protocol deliberately refuses a different callback
+URL or signing secret on renewal; automatic signing-secret rotation is not
+implemented here. It never silently substitutes a destination or widens access.

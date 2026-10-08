@@ -10,11 +10,11 @@ import { object, rpcResult, toolResult } from './common.js';
 // No environment adapter/module selection and no default activation. The caller
 // supplies the separately approved isolated session and verified file config.
 export function createOwnerMessageRuntime({session,authConfig,connectionConfig,lockDirectory,deadlineMs,waitForOwner=false,providerSend,approved=false,
-  clock=Date.now,authenticateFactory=createAuthenticator,connectionFactory=createLarkConnection,modeLock=acquireModeLock}={}) {
+  clock=Date.now,authenticateFactory=createAuthenticator,connectionFactory=createLarkConnection,modeLock=acquireModeLock,onClose=()=>{}}={}) {
  let server,gateway,gatewayGeneration,gatewayAbort,currentLeaseDeadline,release,timer,closing,started=false,stopping=false,authenticate,startSettled,finishStart,effectiveDeadline=waitForOwner?Infinity:deadlineMs;
  function active(){if(stopping||clock()>=effectiveDeadline)throw new Error('Candidate stopped');}
  const close=()=>{
-  if(!closing)closing=(async()=>{stopping=true;clearTimeout(timer);session.close();gatewayAbort?.abort();gateway?.close();await startSettled;if(server)await new Promise(resolve=>server.close(resolve));release?.();})();return closing;
+  if(!closing)closing=(async()=>{stopping=true;clearTimeout(timer);session.close();gatewayAbort?.abort();gateway?.close();await startSettled;if(server)await new Promise(resolve=>server.close(resolve));onClose();release?.();})();return closing;
  };
  const laterClose=()=>setImmediate(()=>close().catch(()=>{}));
  const stopGateway=()=>{gatewayGeneration=undefined;gatewayAbort?.abort();gatewayAbort=undefined;gateway?.close();gateway=undefined;};
@@ -29,6 +29,18 @@ export function createOwnerMessageRuntime({session,authConfig,connectionConfig,l
   if(session.status().phase==='closed')laterClose();
   else if(session.status().incoming_claimed&&session.expiresAt)armSubscription(session.expiresAt());
   return result;
+ }
+ async function ensureGateway(expiry){
+   currentLeaseDeadline=expiry;armSubscription(expiry);
+   let selected=gateway,generation=gatewayGeneration;
+   if(!selected){
+    generation={};gatewayGeneration=generation;const controller=new AbortController();gatewayAbort=controller;
+    const scopedSend=providerSend?((url,options)=>providerSend(url,{...options,signal:controller.signal,beforeConnect(){active();if(controller.signal.aborted||gatewayGeneration!==generation||currentLeaseDeadline<=clock())throw new Error('Gateway lease inactive');options.beforeConnect?.();}})):undefined;
+    selected=connectionFactory(connectionConfig,{invoke:receive},{autoReconnect:false,report(event){if(gatewayGeneration===generation&&event==='lark_connection_failed')laterClose();},...(scopedSend?{send:scopedSend}:{})});gateway=selected;
+    try{await selected.start();}catch{if(gatewayGeneration===generation)laterClose();else selected.close();throw new Error('Gateway start failed');}
+   }
+   if(gatewayGeneration!==generation){selected.close();throw new Error('Gateway superseded');}
+   active();if(currentLeaseDeadline<=clock()){stopGateway();throw Error();}
  }
  async function rpc(method,params,principal){
   active();
@@ -47,16 +59,7 @@ export function createOwnerMessageRuntime({session,authConfig,connectionConfig,l
    const result=await session.subscribe({url:params.delivery.url,secret:params.delivery.secret},scopedPrincipal);
    const subscriptionDeadline=Date.parse(result.refreshBefore);if(!Number.isFinite(subscriptionDeadline))throw Error();
    if(!waitForOwner)effectiveDeadline=Math.min(effectiveDeadline,subscriptionDeadline);active();if(subscriptionDeadline<=clock())throw Error();
-   currentLeaseDeadline=subscriptionDeadline;armSubscription(subscriptionDeadline);
-   let selected=gateway,generation=gatewayGeneration;
-   if(!selected){
-    generation={};gatewayGeneration=generation;const controller=new AbortController();gatewayAbort=controller;
-    const scopedSend=providerSend?((url,options)=>providerSend(url,{...options,signal:controller.signal,beforeConnect(){active();if(controller.signal.aborted||gatewayGeneration!==generation||currentLeaseDeadline<=clock())throw new Error('Gateway lease inactive');options.beforeConnect?.();}})):undefined;
-    selected=connectionFactory(connectionConfig,{invoke:receive},{autoReconnect:false,report(event){if(gatewayGeneration===generation&&event==='lark_connection_failed')laterClose();},...(scopedSend?{send:scopedSend}:{})});gateway=selected;
-    try{await selected.start();}catch{if(gatewayGeneration===generation)laterClose();else selected.close();throw new Error('Gateway start failed');}
-   }
-   if(gatewayGeneration!==generation){selected.close();throw new Error('Gateway superseded');}
-   active();if(currentLeaseDeadline<=clock()){stopGateway();throw Error();}return{...result,cursor:null,truncated:false};
+   await ensureGateway(subscriptionDeadline);return{...result,cursor:null,truncated:false};
   }
   if(method==='tools/call'){
    object(params,['name','arguments','_meta'],['name','arguments']);
@@ -72,8 +75,8 @@ export function createOwnerMessageRuntime({session,authConfig,connectionConfig,l
     authConfig?.principal!=='tunnel-owner:dot-bridge'||!['127.0.0.1','::1'].includes(authConfig.host)||(waitForOwner!==true&&(!Number.isSafeInteger(deadlineMs)||deadlineMs<=clock()||deadlineMs>clock()+900000)))throw new Error('Explicit isolated runtime approval and bounded loopback configuration required');
    started=true;startSettled=new Promise(resolve=>{finishStart=resolve;});
    try{
-    authenticate=authenticateFactory(authConfig,async()=>{throw new Error('No OAuth network');},clock);
     release=modeLock(lockDirectory,'lark',connectionConfig.larkAppId,'tunnel');
+    authenticate=authenticateFactory(authConfig,async()=>{throw new Error('No OAuth network');},clock);
     server=http.createServer(async(req,res)=>{
      let id=null;
      const respond=(status,value)=>{if(!res.destroyed&&!res.headersSent){res.writeHead(status,{'Content-Type':'application/json','Cache-Control':'no-store'});res.end(JSON.stringify(value));}};
@@ -88,7 +91,9 @@ export function createOwnerMessageRuntime({session,authConfig,connectionConfig,l
     });
     server.requestTimeout=10000;server.headersTimeout=10000;server.timeout=15000;server.keepAliveTimeout=1000;
     await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(authConfig.port,authConfig.host,resolve);});
-    active();if(!waitForOwner)timer=setTimeout(laterClose,Math.max(1,deadlineMs-clock()));return server.address();
+    active();if(!waitForOwner)timer=setTimeout(laterClose,Math.max(1,deadlineMs-clock()));
+    const recovered=session.recovery?.();if(recovered){if(recovered.needsGateway)await ensureGateway(recovered.validUntil);else armSubscription(recovered.validUntil);}
+    return server.address();
    }catch{finishStart?.();await close();throw new Error('Isolated runtime startup failed');}finally{finishStart?.();}
   }
  });

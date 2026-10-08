@@ -189,3 +189,9 @@ test('public CLI preserves plan and timed defaults and requires the explicit wai
  const plan=spawnSync(process.execPath,['scripts/owner-message-candidate.js'],{encoding:'utf8',env:{LARK_CREDENTIALS_FILE:'/does-not-exist',OWNER_MESSAGE_WINDOW_SECONDS:'invalid'}});
  assert.equal(plan.status,0);const value=JSON.parse(plan.stdout);assert.equal(value.credential_read,false);assert.equal(value.wait_for_owner,false);assert.equal(value.supports_wait_for_owner,true);
 });
+
+test('runtime closes durable storage before releasing the application lock',async()=>{
+ const order=[];
+ const runtime=createOwnerMessageRuntime({approved:true,waitForOwner:true,session:{close(){},status(){return{};}},authConfig:{authMode:'tunnel-service',tunnelServiceOperation:'readiness',principal:'tunnel-owner:dot-bridge',host:'127.0.0.1',port:0},connectionConfig:{larkAppId:credentials.appId},authenticateFactory:()=>async()=>{},modeLock:()=>()=>order.push('release'),onClose:()=>order.push('store_closed')});
+ await runtime.start();await runtime.close();assert.deepEqual(order,['store_closed','release']);
+});

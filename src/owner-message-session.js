@@ -4,21 +4,25 @@ import { createLarkSender } from './lark.js';
 import { destinationUrl } from './network.js';
 import { webhookHeaders, webhookKey } from './signatures.js';
 import { validateCredentials } from './credentials.js';
-import { equal } from './common.js';
+import { equal, hash, canonical } from './common.js';
 
 // Isolated, code-injected review candidate. Ordinary Bridge, service and callback
 // readiness are deliberately unchanged. No file reads, listeners or WS startup.
 export function createLarkOwnerMessageSession({ credentials, expectedAppId, expectedText, acceptAnyOwnerText = false, fixedReply, callbackHosts = [], authenticatedCallbackDiscovery = false,
-  callbackTransport, recognizeTransport, proxyEnv, providerSend, deadlineMs, waitForOwner = false, clock = Date.now, sdk } = {}) {
+  callbackTransport, recognizeTransport, proxyEnv, providerSend, deadlineMs, waitForOwner = false, ledger, restoredCheckpoint, clock = Date.now, sdk } = {}) {
   validateCredentials(credentials, { paired: true });
   if (typeof waitForOwner !== 'boolean' || credentials.appId !== expectedAppId || !Array.isArray(callbackHosts) || (!callbackHosts.length && authenticatedCallbackDiscovery !== true) ||
       typeof callbackTransport !== 'function' || typeof recognizeTransport !== 'function' || typeof providerSend !== 'function' ||
       (waitForOwner !== true && (!Number.isSafeInteger(deadlineMs) || deadlineMs <= clock() || deadlineMs > clock() + 900000))) throw new Error('Invalid isolated owner-message session');
   const config = Object.freeze({ larkAppId: credentials.appId, larkAppSecret: credentials.appSecret,
     ownerOpenId: credentials.ownerOpenId, tenantKey: credentials.tenantKey, ownerChatId: credentials.ownerChatId });
-  const gate = createSingleMessageCandidate({ binding: config, expectedText, acceptAnyOwnerText, fixedReply, durationMs: waitForOwner ? 300000 : deadlineMs-clock(), waitForOwner, clock, sdk });
+  let saved=restoredCheckpoint??ledger?.load(),persisted=!!saved;
+  if(saved&&!waitForOwner)throw new Error('Durable recovery requires owner-wait mode');
+  if(saved&&['event_attempted','reply_attempted'].includes(saved.phase)){saved={...saved,phase:'uncertain',updatedAt:Math.max(saved.updatedAt,clock())};ledger?.save(saved);}
+  const gate = createSingleMessageCandidate({ binding: config, expectedText, acceptAnyOwnerText, fixedReply, durationMs: waitForOwner ? 300000 : deadlineMs-clock(), waitForOwner, restoredState:saved, clock, sdk });
   const replySender = createLarkSender(config, providerSend, clock);
-  let subscription, phase='awaiting_subscription', revoked=false,subscriptionTimer,replyDeadline;
+  let subscription=saved?{...saved.subscription,hosts:[new URL(saved.subscription.url).hostname]}:undefined, phase=saved?(saved.phase==='waiting'?'subscribed':saved.phase==='event_delivered'?'awaiting_fixed_reply':'closed'):'awaiting_subscription', revoked=!!saved&&!['waiting','event_delivered'].includes(saved.phase),subscriptionTimer,replyDeadline=saved?.message?.expires;
+  const persist=nextPhase=>{if(!ledger||!subscription)return;ledger.save({version:1,subscription:{id:subscription.id,principal:'tunnel-owner:dot-bridge',url:subscription.url,secret:subscription.secret,validUntil:subscription.validUntil,verified:true},phase:nextPhase,message:gate.checkpointMessage(),updatedAt:clock()});persisted=true;};
   const scopeDeadline = () => Math.min(waitForOwner ? Infinity : deadlineMs, subscription?.validUntil ?? Infinity, replyDeadline ?? Infinity);
   const armExpiry = () => {clearTimeout(subscriptionTimer);subscriptionTimer=setTimeout(()=>{if(waitForOwner&&!gate.status().incoming_claimed&&!revoked)phase='awaiting_renewal';else terminate();},Math.max(1,scopeDeadline()-clock()));subscriptionTimer.unref?.();};
   const terminate=()=>{clearTimeout(subscriptionTimer);revoked=true;gate.cancel();phase='closed';callbackTransport.close?.();providerSend.close?.();};
@@ -27,6 +31,7 @@ export function createLarkOwnerMessageSession({ credentials, expectedAppId, expe
     if (revoked || clock() >= scopeDeadline() || !status || status.mode !== 'owner_single_message_proxy' || status.ready !== true ||
       (subscription && subscription.validUntil <= clock())) throw new Error('Owner-message experiment authorization inactive');
   }
+  if(saved){if(revoked){callbackTransport.close?.();providerSend.close?.();}else if(scopeDeadline()>clock())armExpiry();else if(saved.phase==='waiting')phase='awaiting_renewal';else terminate();}
   return Object.freeze({
     async subscribe({ url, secret }, principal) {
       if (revoked || principal?.id !== 'tunnel-owner:dot-bridge' || !Number.isFinite(principal.validUntil) || principal.validUntil <= clock()) throw new Error('Authenticated owner subscription required');
@@ -34,20 +39,19 @@ export function createLarkOwnerMessageSession({ credentials, expectedAppId, expe
       destinationUrl(url,selectedHosts);webhookKey(secret);
       if(subscription){
         if(waitForOwner!==true||!['subscribed','awaiting_renewal'].includes(phase)||gate.status().incoming_claimed||url!==subscription.url||!equal(secret,subscription.secret))throw new Error('Subscription renewal refused');
-        callbackTransport.renewLease(principal.validUntil);
-        subscription.validUntil=principal.validUntil;authorize();phase='subscribed';armExpiry();
+        try{callbackTransport.renewLease(principal.validUntil);subscription.validUntil=principal.validUntil;authorize();persist('waiting');phase='subscribed';armExpiry();}catch{terminate();throw new Error('Subscription renewal persistence failed');}
         return {id:subscription.id,refreshBefore:new Date(subscription.validUntil).toISOString()};
       }
       if(phase!=='awaiting_subscription')throw new Error('Subscription unavailable');
       if(waitForOwner)callbackTransport.renewLease(principal.validUntil);
-      subscription={id:`sub_${randomBytes(32).toString('hex')}`,url,secret,hosts:selectedHosts,validUntil:Math.min(waitForOwner?Infinity:deadlineMs,principal.validUntil)};
+      subscription={id:`sub_${hash(canonical({principal:principal.id,url,name:'lark.message.created',arguments:{conversation:'owner'}}))}`,url,secret,hosts:selectedHosts,validUntil:Math.min(waitForOwner?Infinity:deadlineMs,principal.validUntil)};
       authorize();armExpiry();
       phase='verifying';const challenge=randomBytes(32).toString('base64url'),body=Buffer.from(JSON.stringify({type:'verification',challenge}));
       try {
         const response=await callbackTransport(url,{method:'POST',hosts:subscription.hosts,headers:webhookHeaders(subscription,`verify_${randomBytes(16).toString('hex')}`,body,clock()),body,beforeConnect:authorize});
         authorize();const echoed=JSON.parse(response.body.toString());
         if(response.status<200||response.status>=300||typeof echoed.challenge!=='string'||!equal(echoed.challenge,challenge))throw Error();
-        phase='subscribed';return {id:subscription.id,refreshBefore:new Date(subscription.validUntil).toISOString()};
+        persist('waiting');phase='subscribed';return {id:subscription.id,refreshBefore:new Date(subscription.validUntil).toISOString()};
       }catch{terminate();throw new Error('Owner-message callback verification failed');}
     },
     async receive(envelope) {
@@ -56,10 +60,11 @@ export function createLarkOwnerMessageSession({ credentials, expectedAppId, expe
       const event=gate.claimEvent();if(!event)return outcome;
       replyDeadline=Date.parse(event.data.reply_deadline);armExpiry();phase='event_claimed';const body=Buffer.from(JSON.stringify(event));
       try {
+        persist('event_attempted');
         const response=await callbackTransport(subscription.url,{method:'POST',hosts:subscription.hosts,headers:webhookHeaders(subscription,event.eventId,body,clock()),body,beforeConnect:authorize});
         authorize();if(response.status<200||response.status>=300)throw Error();
-        gate.finishEvent(event.eventId,'delivered');phase='awaiting_fixed_reply';return {outcome:'delivered'};
-      }catch{gate.finishEvent(event.eventId,'uncertain');terminate();return {outcome:'uncertain'};}
+        persist('event_delivered');gate.finishEvent(event.eventId,'delivered');phase='awaiting_fixed_reply';return {outcome:'delivered'};
+      }catch{try{persist('uncertain');}catch{}gate.finishEvent(event.eventId,'uncertain');terminate();return {outcome:'uncertain'};}
     },
     setup(callbackUrl) {
       let callback_hostname=null,callback_policy='not_provided';
@@ -74,19 +79,21 @@ export function createLarkOwnerMessageSession({ credentials, expectedAppId, expe
     },
     unsubscribe(url,principal) {
       if(principal?.id!=='tunnel-owner:dot-bridge'||!Number.isFinite(principal.validUntil)||principal.validUntil<=clock()||url!==subscription?.url)throw new Error('Subscription unavailable');
-      terminate();
+      try{persist('cancelled');}finally{terminate();}
     },
     async reply(messageId,text,principal) {
       authorize();if(principal?.id!=='tunnel-owner:dot-bridge'||!Number.isFinite(principal.validUntil)||principal.validUntil<=clock()||phase!=='awaiting_fixed_reply')throw new Error('Fixed reply unavailable');
       const claim=gate.claimReply(messageId,text);if(!claim)throw new Error('Fixed reply unavailable');phase='reply_claimed';
       try {
+        persist('reply_attempted');
         await replySender(claim.message,claim.text,{authorize(){authorize();if(!gate.authorizeReply())throw new Error('Reply budget inactive');}});
         authorize();if(!gate.authorizeReply())throw new Error('Reply scope ended');
-        gate.finishReply('sent');phase='closed';return {status:'sent'};
-      }catch{gate.finishReply('uncertain');phase='closed';return {status:'uncertain'};}
+        persist('sent');gate.finishReply('sent');phase='closed';return {status:'sent'};
+      }catch{try{persist('uncertain');}catch{}gate.finishReply('uncertain');phase='closed';return {status:'uncertain'};}
     },
+    recovery(){return saved&&['subscribed','awaiting_fixed_reply'].includes(phase)&&scopeDeadline()>clock()?{validUntil:scopeDeadline(),needsGateway:phase==='subscribed'}:null;},
     expiresAt:scopeDeadline,
     close:terminate,
-    status(){return {phase,...gate.status(),ordinary_callback_ready:false,final_destination_ip_verified:false,live_validation_performed:false};}
+    status(){return {phase,subscription_expires_at:subscription?new Date(subscription.validUntil).toISOString():null,subscription_persisted:persisted,...gate.status(),ordinary_callback_ready:false,final_destination_ip_verified:false,live_validation_performed:false};}
   });
 }
