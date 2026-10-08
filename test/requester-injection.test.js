@@ -13,8 +13,8 @@ const status = send => send.callbackTransportStatus();
 test('canonical callback injection and legacy aliases share a strict code-only contract', () => {
   for (const name of ['managedAdapter', 'managedCallbackAdapter']) {
     const send = makePublicRequester({ proxyEnv, [name]: adapter(), lookup: never, request: never });
-    assert.deepEqual(status(send), { ready: true, mode: 'managed', reason: 'none', proxy_configured: true,
-      destination_binding: 'delegated_unverified', network_checked: false });
+    assert.deepEqual(status(send), { ready: false, mode: 'blocked', reason: 'proxy_policy_unverified', proxy_configured: true,
+      destination_binding: 'unverified', network_checked: false });
     assert.deepEqual(send.callbackPreflight(), status(send));
   }
   const transport = async () => assert.fail('No callback is attempted');
@@ -23,7 +23,7 @@ test('canonical callback injection and legacy aliases share a strict code-only c
     assert.equal(status(send)?.ready ?? false, false);
   }
   const one = adapter();
-  assert.equal(status(makePublicRequester({ proxyEnv, managedAdapter: one, managedCallbackAdapter: one })).mode, 'managed');
+  assert.equal(status(makePublicRequester({ proxyEnv, managedAdapter: one, managedCallbackAdapter: one })).mode, 'blocked');
   for (const options of [null, [], { managedAdpater: one }, { callbackSender: transport },
     { managedAdapter: { verified: true } }, { managedAdapter: { send: never, verified: true } },
     { managedAdapter: one, managedCallbackAdapter: adapter() }, { callbackTransport: transport, callbackSend: never },
@@ -44,14 +44,14 @@ test('formal sender factory is offline, default blocked, and does not interpret 
     calls++; assert.equal(options.proxyEnv, env);
     return makePublicRequester({ ...options, managedAdapter: adapter(), lookup: never, request: never });
   } });
-  assert.equal(calls, 1); assert.equal(status(injected).mode, 'managed');
+  assert.equal(calls, 1); assert.equal(status(injected).mode, 'blocked');
   for (const options of [{ managedAdapter: adapter() }, { requesterFactory: 'module.js' },
     { requesterFactory: () => ({ send: never }) }, { proxyEnv: env, send: never }]) {
     assert.throws(() => createServiceSender(options), TypeError);
   }
 });
 
-test('service-created sender carries synthetic challenge and queued event through the same managed adapter without a listener', async () => {
+test('service-created sender blocks arbitrary managed adapters before challenge or queued event', async () => {
   const kinds = []; let factories = 0, lookups = 0;
   const now = Date.now(), settings = config();
   const send = createServiceSender({ proxyEnv, requesterFactory(options) {
@@ -67,10 +67,11 @@ test('service-created sender carries synthetic challenge and queued event throug
   const app = createApp(settings, { send, worker: false, clock: () => now });
   try {
     assert.equal(app.bridge.send, send);
-    await app.bridge.rpc('events/subscribe', subscriptionParams(), { id: settings.principal, validUntil: now + 60000 });
+    await assert.rejects(app.bridge.rpc('events/subscribe', subscriptionParams(), { id: settings.principal, validUntil: now + 60000 }), e => e.code === -32015 && e.data.reason === 'proxy_policy_unverified');
+    const previous=subscriptionParams();app.bridge.store.saveSubscription({id:app.bridge.subscriptionId(settings.principal,previous.delivery.url,previous.name,previous.arguments),principal:settings.principal,url:previous.delivery.url,secret:previous.delivery.secret,expires:now+60000,verified_until:now+60000},now);
     app.bridge.store.ingest({ id: 'synthetic-message', sourceEventId: 'synthetic-event', owner: settings.ownerOpenId, tenantKey: settings.tenantKey, chatId: settings.ownerChatId, text: 'synthetic only', timestamp: new Date(now).toISOString(), expires: now + 60000 }, 'synthetic-code-injection', now);
     await app.bridge.tick();
-    assert.deepEqual(kinds, ['challenge', 'event']); assert.equal(factories, 1); assert.equal(lookups, 2);
+    assert.deepEqual(kinds, []); assert.equal(factories, 1); assert.equal(lookups, 0);
     assert.equal(status(send).network_checked, false);
   } finally { await app.close(); }
 });

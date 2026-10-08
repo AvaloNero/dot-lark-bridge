@@ -73,7 +73,7 @@ test('inbound live dispatcher checks current delivery authorization immediately 
  const dispatcher=createLarkDispatcher(fixtureConfig(),{get(){return undefined;},ingest(){ingested++;}},()=>now,{authorize(){throw new BridgeError('Callback delivery authorization inactive',{code:-32012});}});
  await assert.rejects(dispatcher.invoke(larkPayload(now),{needCheck:false}),e=>e.code===-32012);assert.equal(ingested,0);
 });
-test('real live challenge and event use injected managed adapter without direct request fallback',async t=>{
+test('real live challenge and event remain blocked for an arbitrary managed adapter',async t=>{
  const config=live(t),now=Date.now();const kinds=[];let direct=0,lookups=0;
  const managedAdapter={async send(target,options){
   assert.equal(target.hostname,'receiver.example.com');assert.deepEqual(target.addresses,[{address:'8.8.8.8',family:4}]);assert.equal(target.tls.rejectUnauthorized,true);
@@ -83,10 +83,11 @@ test('real live challenge and event use injected managed adapter without direct 
  }};
  const send=makePublicRequester({proxyEnv:{HTTPS_PROXY:'http://proxy.example:8080'},managedAdapter,lookup:async()=>{lookups++;return [{address:'8.8.8.8',family:4}];},request:()=>{direct++;throw Error('no direct network');}});
  const app=createApp(config,{send,worker:false,approvedLive:true});beforeFixtureCleanup(t,()=>app.close());
- await app.bridge.rpc('events/subscribe',subscriptionParams(),{id:config.principal,validUntil:now+60000});
- app.bridge.store.ingest({id:'m',sourceEventId:'e',owner:'owner',tenantKey:'tenant',chatId:'chat',text:'synthetic only',timestamp:new Date(now).toISOString(),expires:now+60000},'replay',now);
- await app.bridge.tick();assert.deepEqual(kinds,['challenge','event']);assert.equal(lookups,2);assert.equal(direct,0);
- assert.equal(app.readiness().callback_transport.mode,'managed');assert.equal(app.readiness().callback_transport.network_checked,false);
+ await assert.rejects(app.bridge.rpc('events/subscribe',subscriptionParams(),{id:config.principal,validUntil:now+60000}),e=>e.code===-32015&&e.data.reason==='proxy_policy_unverified');
+ const previous=subscriptionParams();app.bridge.store.saveSubscription({id:app.bridge.subscriptionId(config.principal,previous.delivery.url,previous.name,previous.arguments),principal:config.principal,url:previous.delivery.url,secret:previous.delivery.secret,expires:now+60000,verified_until:now+60000},now);
+    app.bridge.store.ingest({id:'m',sourceEventId:'e',owner:'owner',tenantKey:'tenant',chatId:'chat',text:'synthetic only',timestamp:new Date(now).toISOString(),expires:now+60000},'replay',now);
+ await app.bridge.tick();assert.deepEqual(kinds,[]);assert.equal(lookups,0);assert.equal(direct,0);
+ assert.equal(app.readiness().callback_transport.mode,'blocked');assert.equal(app.readiness().callback_transport.network_checked,false);
 });
 test('provider discovery budgets do not alter callback factory limits',()=>{
  const send=makePublicRequester({timeoutMs:30000,maxBytes:262144,proxyEnv:{}});

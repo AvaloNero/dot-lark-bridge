@@ -92,7 +92,7 @@ test('formal sender factory is constructed once and shared by preflight and both
     const service = createPersistentService({ bridgeMode: mode, authMode: mode === 'tunnel' ? 'oauth' : 'deny', larkTransport: 'long-connection' }, {
       approved: true, send, appFactory: factory, sitesFactory: factory, modeLock: () => () => {}, emit() {}, schedule() {}, unschedule() {}
     });
-    const before = service.preflight(); assert.equal(before.callback_transport.mode, 'managed');
+    const before = service.preflight(); assert.equal(before.callback_transport.mode, 'blocked');
     await service.start();
     try {
       assert.equal(factoryCalls, 1); assert.equal(captured, send);

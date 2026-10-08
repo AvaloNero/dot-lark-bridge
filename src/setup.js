@@ -88,15 +88,15 @@ export function createPairingSession(credentials, { ownerOpenId, sdk = lark, clo
   return { config, dispatcher, completion, challenge: text, expires, cancel() { resolved = true; } };
 }
 
-export async function pairFeishu({ credentials, bindingFile, ownerOpenId, confirmed = false, signal, sdk = lark,
+async function pairWithSession({ credentials, bindingFile, ownerOpenId, confirmed = false, signal, sdk = lark,
   report = () => {}, timeoutMs = 5 * 60000, connectionTimeoutMs = 60000,
-  connectionFactory = createLarkConnection, save = writePrivateJson, clock = Date.now }) {
+  connectionFactory = createLarkConnection, save = writePrivateJson, clock = Date.now }, { configFactory, sessionFactory }) {
   if (!confirmed) throw new Error('Owner pairing requires prior main-thread approval and --confirm-bind');
   assertPrivateDestination(bindingFile); checkSignal(signal);
   if (![timeoutMs, connectionTimeoutMs].every(value => Number.isFinite(value) && value > 0 && value <= 2147483647)) {
     throw new Error('Pairing and connection timeouts must be finite positive durations');
   }
-  const config = pairingConfig(credentials, ownerOpenId, timeoutMs);
+  const config = configFactory(credentials, ownerOpenId, timeoutMs);
   let session, connection, connectionTimer, pairingTimer, rejectAbort, resolveReady, stopped = false, failure;
   const interrupted = new Promise((_, reject) => { rejectAbort = reject; });
   // A synchronous factory failure may exit before the main race is installed.
@@ -123,9 +123,9 @@ export async function pairFeishu({ credentials, bindingFile, ownerOpenId, confir
         if (['lark_connected', 'lark_reconnected', 'lark_connection_failed'].includes(event)) report({ phase: event });
         if (event !== 'lark_connected' || session) return;
         checkSignal(signal); clearTimeout(connectionTimer);
-        session = createPairingSession(credentials, { ownerOpenId, sdk, clock, timeoutMs, report });
+        session = sessionFactory(credentials, { ownerOpenId, sdk, clock, timeoutMs, report });
         pairingTimer = setTimeout(() => fail(new Error('Pairing challenge expired')), timeoutMs);
-        report({ phase: 'pairing_challenge', private_text_to_send: session.challenge, expires_in_seconds: timeoutMs / 1000 });
+        report(session.acceptsAnyPlainText ? { phase: 'owner_message_ready', expires_in_seconds: timeoutMs / 1000 } : { phase: 'pairing_challenge', private_text_to_send: session.challenge, expires_in_seconds: timeoutMs / 1000 });
         resolveReady();
       } catch (error) { fail(error); }
     } });
@@ -142,4 +142,60 @@ export async function pairFeishu({ credentials, bindingFile, ownerOpenId, confir
     stopped = true; clearTimeout(connectionTimer); clearTimeout(pairingTimer);
     signal?.removeEventListener('abort', abort); session?.cancel(); connection?.close();
   }
+}
+
+export function pairFeishu(options) {
+  return pairWithSession(options, { configFactory: pairingConfig, sessionFactory: createPairingSession });
+}
+function scannedOwnerConfig(credentials, _owner, timeoutMs) {
+  validateCredentials(credentials);
+  if(credentials.status !== 'unbound' || !identity(credentials.ownerOpenId)) throw new Error('Official scanned-owner binding required');
+  return {larkAppId:credentials.appId,larkAppSecret:credentials.appSecret,ownerOpenId:credentials.ownerOpenId,replyTtlMs:timeoutMs};
+}
+export const SCANNED_OWNER_TEST_TEXT = '飞书 单条连接测试';
+function createScannedOwnerSession(credentials,{sdk=lark,clock=Date.now,timeoutMs=300000,nonce=randomBytes(24).toString('base64url'),report=()=>{}}={},testMessage=false) {
+  const config=scannedOwnerConfig(credentials,undefined,timeoutMs),started=clock(),expires=started+timeoutMs,challenge=testMessage?SCANNED_OWNER_TEST_TEXT:`pair ${nonce}`;
+  let settled=false,resolve;const completion=new Promise(done=>{resolve=done;});
+  const count=classification=>{try{report({phase:'owner_binding_event',classification});}catch{}};
+  const reject=classification=>{count(classification);return {outcome:'rejected'};};
+  const dispatcher={async invoke(envelope,params){
+    if(settled||clock()>=expires){count('closed');return {outcome:'ignored'};}
+    // Called exclusively by the authenticated official app WSClient. Never bind
+    // from an HTTP payload, an unknown first sender or an SDK-merged header.
+    if(params?.needCheck!==false||envelope?.schema!=='2.0'||!envelope.header||!envelope.event||
+       ['app_id','tenant_key','event_id','event_type','create_time','schema'].some(k=>Object.hasOwn(envelope.event,k)))return reject('envelope_rejected');
+    const h=envelope.header,e=envelope.event;
+    if(h.app_id!==credentials.appId||h.event_type!=='im.message.receive_v1')return reject('app_or_event_rejected');
+    if(e.sender?.sender_type!=='user'||e.sender?.sender_id?.open_id!==credentials.ownerOpenId)return reject('owner_rejected');
+    if(!identity(h.tenant_key)||e.sender?.tenant_key!==h.tenant_key)return reject('tenant_rejected');
+    if(!identity(e.message?.chat_id)||e.message?.chat_type!=='p2p')return reject('conversation_rejected');
+    const verified={...config,tenantKey:h.tenant_key,ownerChatId:e.message.chat_id};
+    const strict=createVerifiedLarkDispatcher(verified,async data=>{
+      try{
+        const message=ownerPrivateText(data,verified,clock());
+        if(!message)return reject('message_type_rejected');
+        if((!testMessage&&message.text!==challenge)||Date.parse(message.timestamp)<(testMessage?started:started-30000)||settled||clock()>=expires)return reject('freshness_or_challenge_rejected');
+        settled=true;resolve(validateCredentials({...credentials,status:'paired',tenantKey:h.tenant_key,ownerChatId:message.chatId,pairedAt:new Date(clock()).toISOString()},{paired:true}));
+        count('accepted');return {outcome:'paired'};
+      }catch{return reject('message_validation_rejected');}
+    },{sdk,report(){}});
+    return strict.invoke(envelope,params);
+  }};
+  return {config,dispatcher,completion,challenge,expires,acceptsAnyPlainText:testMessage,cancel(){settled=true;}};
+}
+export function createScannedOwnerPairingSession(credentials,options) { return createScannedOwnerSession(credentials,options,false); }
+export function createScannedOwnerTestMessageSession(credentials,options) { return createScannedOwnerSession(credentials,options,true); }
+function validateScannedOwnerOptions(options) {
+  if(options?.confirmed!==true||options.expectedAppId!==options.credentials?.appId||!/^cli_[a-fA-F0-9]{16}$/.test(options.expectedAppId)||
+     (options.ownerOpenId!==undefined&&options.ownerOpenId!==options.credentials.ownerOpenId)||
+     (options.timeoutMs!==undefined&&(options.timeoutMs<1||options.timeoutMs>300000))||
+     (options.connectionTimeoutMs!==undefined&&(options.connectionTimeoutMs<1||options.connectionTimeoutMs>60000)))throw new Error('Explicit bounded scanned-owner pairing required');
+}
+export function pairScannedOwner(options) {
+  validateScannedOwnerOptions(options);
+  return pairWithSession(options,{configFactory:scannedOwnerConfig,sessionFactory:createScannedOwnerPairingSession});
+}
+export function pairScannedOwnerTestMessage(options) {
+  validateScannedOwnerOptions(options);
+  return pairWithSession(options,{configFactory:scannedOwnerConfig,sessionFactory:createScannedOwnerTestMessageSession});
 }

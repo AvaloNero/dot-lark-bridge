@@ -30,6 +30,17 @@ export function createSelectedRuntime(mode, { tunnel, sites }) {
   return factory();
 }
 
+// Identity is diagnostic only: absence or mismatch never authorizes lock takeover.
+function processIdentity() {
+  if (process.platform !== 'linux') return { pid_namespace: null, process_start_ticks: null, boot_id: null };
+  const stat = fs.readFileSync('/proc/self/stat', 'utf8');
+  const start = stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19];
+  const namespace = fs.readlinkSync('/proc/self/ns/pid');
+  const boot = fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim();
+  if (!/^\d+$/.test(start) || !/^pid:\[\d+\]$/.test(namespace) || !/^[a-f0-9-]{36}$/.test(boot)) throw new Error('Invalid process identity');
+  return { pid_namespace: namespace, process_start_ticks: start, boot_id: boot };
+}
+
 // Common authority on one cloud computer, independent of mode and DB path.
 // A crashed/stale lock fails closed and requires explicit operator recovery.
 export function acquireModeLock(directory, channel, appId, mode) {
@@ -47,8 +58,9 @@ export function acquireModeLock(directory, channel, appId, mode) {
   const stat = fs.statSync(directory);
   if (!stat.isDirectory() || (stat.mode & 0o077)) throw new Error('Mode lock directory must be private');
   const file = path.join(directory, `${hash(`${channel}:${appId}`)}.lock`), nonce = randomUUID();
+  const identity = processIdentity();
   const fd = fs.openSync(file, 'wx', 0o600);
-  try { fs.writeFileSync(fd, JSON.stringify({ nonce, mode, pid: process.pid })); fs.fsyncSync(fd); }
+  try { fs.writeFileSync(fd, JSON.stringify({ nonce, mode, pid: process.pid, ...identity })); fs.fsyncSync(fd); }
   finally { fs.closeSync(fd); }
   let released = false;
   return () => {

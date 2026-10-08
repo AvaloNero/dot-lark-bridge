@@ -2,6 +2,7 @@ import https from 'node:https';
 import { createProviderProxyAgent } from './provider-network.js';
 
 const ENDPOINT = 'https://accounts.feishu.cn/oauth/v1/app/registration';
+const errnoAllowlist = new Set(['ERR_PROXY_TUNNEL','ECONNRESET','ECONNREFUSED','ETIMEDOUT','EAI_AGAIN','ENOTFOUND','EHOSTUNREACH','ENETUNREACH','EPIPE','ERR_TLS_CERT_ALTNAME_INVALID','CERT_HAS_EXPIRED','DEPTH_ZERO_SELF_SIGNED_CERT','UNABLE_TO_VERIFY_LEAF_SIGNATURE']);
 const refused = code => Object.assign(new Error('Official registration transport failed'), { code });
 
 // For a dedicated registration subprocess only: install as the pinned SDK's
@@ -28,6 +29,7 @@ export function makeRegistrationPost({ env = process.env, request = https.reques
     try {
       return await new Promise((resolve, reject) => {
         let req, timer, settled = false;
+        const networkError = (error, fallback = 'UNKNOWN') => { if (!settled) report({ phase: 'registration_transport_error', action: begin ? 'begin' : 'poll', request_number: requestNumber, errno: errnoAllowlist.has(error?.code) ? error.code : fallback, ...(error?.code === 'ERR_PROXY_TUNNEL' && Number.isInteger(error.statusCode) && error.statusCode >= 100 && error.statusCode <= 599 ? { proxy_status_code: error.statusCode } : {}), ...(error?.code === 'ERR_PROXY_TUNNEL' && typeof error.proxyTunnelTimeout === 'number' && Number.isFinite(error.proxyTunnelTimeout) ? { proxy_tunnel_timeout: error.proxyTunnelTimeout > 0 } : {}), elapsed_ms: Date.now() - started, at: new Date().toISOString() }); };
         const finish = (error, value) => { if (settled) return; settled = true; clearTimeout(timer); error ? reject(error) : resolve(value); };
         try {
           req = request(ENDPOINT, { method: 'POST', agent, rejectUnauthorized: true, servername: 'accounts.feishu.cn',
@@ -37,16 +39,16 @@ export function makeRegistrationPost({ env = process.env, request = https.reques
             if (![200, 400].includes(response.statusCode)) { response.destroy(); finish(refused('registration_http_refused')); return; }
             const chunks = []; let bytes = 0;
             response.on('data', chunk => { bytes += chunk.length; if (bytes > 65536) { response.destroy(); finish(refused('registration_response_limit')); } else chunks.push(chunk); });
-            response.on('error', () => finish(refused('registration_response_failed')));
-            response.on('aborted', () => finish(refused('registration_response_failed')));
+            response.on('error', error => { networkError(error); finish(refused('registration_response_failed')); });
+            response.on('aborted', () => { networkError(null, 'RESPONSE_ABORTED'); finish(refused('registration_response_failed')); });
             response.on('end', () => {
               try { const value = JSON.parse(Buffer.concat(chunks).toString('utf8')); if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(); finish(null, value); }
               catch { finish(refused('registration_response_invalid')); }
             });
           });
-        } catch { finish(refused('registration_connection_refused')); return; }
-        timer = setTimeout(() => { req.destroy(); finish(refused('registration_timeout')); }, timeoutMs);
-        req.on('error', () => finish(refused('registration_connection_refused')));
+        } catch (error) { networkError(error); finish(refused('registration_connection_refused')); return; }
+        timer = setTimeout(() => { networkError(null, 'REQUEST_TIMEOUT'); finish(refused('registration_timeout')); req.destroy(); }, timeoutMs);
+        req.on('error', error => { networkError(error); finish(refused('registration_connection_refused')); });
         req.end(body);
       });
     } finally { agent.destroy(); }

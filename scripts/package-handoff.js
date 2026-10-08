@@ -25,7 +25,7 @@ try {
   const sha256 = createHash('sha256').update(fs.readFileSync(zip)).digest('hex');
   const result = { revision, filename: `${name}.zip`, sha256, bytes: fs.statSync(zip).size, source_files: entries.length,
     node: '>=24.15 <25', sqlite: 'node:sqlite; one process and durable local disk', mcp_protocol: '2026-07-28',
-    required_sibling_repository: 'dot-qq-bridge', required_sibling_package: 'packages/dot-bridge-transport', standalone: false,
+    required_sibling_repository: 'dot-qq-bridge', required_sibling_packages: ['packages/dot-bridge-transport', 'packages/dot-bridge-platform', 'packages/dot-bridge-tunnel'], standalone: false,
     contains_credentials: false, real_lark_connected: false, current_dot_connected: false, deployed: false };
   fs.writeFileSync(manifest, JSON.stringify(result, null, 2) + '\n', { flag: 'wx' });
   process.stdout.write(JSON.stringify(result, null, 2) + '\n');
