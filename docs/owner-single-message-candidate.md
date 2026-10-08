@@ -20,8 +20,13 @@ signed callback challenge and the existing fixed-message Feishu reply sender.
 It is intentionally not imported by ordinary services. The session itself starts no WebSocket, HTTP listener or credential reader.
 `src/owner-message-runtime.js` wraps it in a bounded loopback MCP listener using
 the existing authentication and MCP validation; only a verified subscription
-starts a non-reconnecting gateway. It takes the same application/mode lock and
-closes on reply completion, unsubscribe or deadline. Integration remains
+starts a non-reconnecting gateway. It takes the same application/mode lock. The
+launcher with the additional explicit `--wait-for-owner` flag waits for the owner without a process-wide fifteen-minute
+cutoff; it closes on reply completion, unrecoverable failure or cancellation.
+A subscription expiry pauses the gateway while retaining the local MCP listener
+for renewal. Renewal requires the same authenticated owner, exact callback URL
+and secret, and never resets the one-message budget. Once a message is accepted,
+its original reply deadline and subscription expiry remain binding. Integration remains
 subject to shared experimental scope recognition; production callback readiness
 is never asserted. The forced proxy's final destination IP remains unverified.
 
@@ -37,8 +42,7 @@ final-IP uncertainty. Sharing this candidate grants none of those permissions.
 
 The confirmed launcher requires `LARK_CREDENTIALS_FILE` (already paired),
 `LARK_EXPECTED_APP_ID`, `TUNNEL_SERVICE_KEY_FILE`, `BRIDGE_LOCK_DIRECTORY`,
-`OWNER_MESSAGE_FIXED_REPLY`, optional
-`OWNER_MESSAGE_WINDOW_SECONDS` (30–900; default 300) and
+`OWNER_MESSAGE_FIXED_REPLY` and optional
 `OWNER_MESSAGE_PORT` (default 3102). It statically imports the experimental shared owner-message export from
 `../dot-qq-bridge/packages/dot-bridge-transport/experimental/owner-message.js`
 and the catalog from that sibling repository. Clone both repositories side by
@@ -95,3 +99,20 @@ Source reproduction requires the complete sibling QQ checkout, including
 transport package. The existing Docker recipe copies transport alone and is
 not a supported packaging route for this candidate; no container deployment
 is included or verified in this change.
+
+The new waiting behavior is prepared offline and is not permission to start or
+extend a real service. Protocol leases remain finite; the task client must renew
+them. An expired lease authorizes no incoming message, callback or reply. The
+legacy code-injected finite-deadline mode remains available for bounded tests.
+
+A supervisor can explicitly preserve the previous timed run by calling
+`startOwnerMessageCandidate({ approved: true, waitForOwner: false })`.
+That branch reads `OWNER_MESSAGE_WINDOW_SECONDS` (30–900, default 300) and passes
+the same absolute deadline through the gate, transport, provider and runtime.
+The explicit `waitForOwner: true` branch does not read that variable. Both values
+must be literal booleans; strings and numeric aliases are rejected before reads.
+
+The public API and confirmed CLI default to the previous timed mode. Only an
+explicit `waitForOwner: true` API option or additional `--wait-for-owner` CLI
+flag enables waiting. A no-argument CLI remains plan-only; its
+`supports_wait_for_owner: true` capability does not imply activation.

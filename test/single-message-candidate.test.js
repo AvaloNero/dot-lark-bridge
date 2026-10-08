@@ -39,3 +39,34 @@ test('one authenticated ordinary text is data, with no exact content restriction
  const event=gate.claimEvent();assert.equal(event.data.text,text);assert.equal((await gate.dispatcher.invoke(envelope(now,{text:'第二句',id:'other'}),{needCheck:false})).outcome,'budget_exhausted');
  gate.finishEvent(event.eventId,'delivered');assert.equal(gate.readMessage('m').text,text);assert.equal(gate.claimReply('m','arbitrary reply'),null);assert.equal(gate.claimReply('m','fixed reply').text,'fixed reply');
 });
+test('owner wait outlives fifteen minutes while preserving identity, freshness and one-message budgets',async()=>{
+ let now=Date.now();const started=now,durationMs=60000;
+ const gate=createSingleMessageCandidate({binding,acceptAnyOwnerText:true,fixedReply:'fixed reply',waitForOwner:true,durationMs,clock:()=>now});
+ now+=16*60000;assert.equal(gate.status().state,'waiting');
+ assert.equal((await gate.dispatcher.invoke(envelope(now,{owner:'stranger'}),{needCheck:false})).outcome,'rejected');
+ assert.equal((await gate.dispatcher.invoke(envelope(started),{needCheck:false})).outcome,'rejected');
+ const messageAt=now-1000,text='现在来了';
+ assert.equal((await gate.dispatcher.invoke(envelope(messageAt,{text}),{needCheck:false})).outcome,'accepted');
+ assert.equal((await gate.dispatcher.invoke(envelope(messageAt,{text}),{needCheck:false})).outcome,'duplicate');
+ assert.equal((await gate.dispatcher.invoke(envelope(now,{id:'second'}),{needCheck:false})).outcome,'budget_exhausted');
+ const event=gate.claimEvent();assert.equal(event.data.text,text);assert.equal(Date.parse(event.data.reply_deadline),messageAt+durationMs);assert.equal(gate.claimEvent(),null);
+ assert.equal(gate.finishEvent(event.eventId,'delivered'),true);
+ assert.equal(Date.parse(gate.readMessage('m').reply_deadline),messageAt+durationMs);
+ assert.equal(gate.claimReply('m','arbitrary'),null);assert.equal(gate.claimReply('m','fixed reply').message.expires,messageAt+durationMs);
+ assert.equal(gate.claimReply('m','fixed reply'),null);assert.equal(gate.authorizeReply(),true);
+ now=messageAt+durationMs;assert.equal(gate.authorizeReply(),false);assert.equal(gate.finishReply('sent'),false);assert.equal(gate.readMessage('m'),null);assert.equal(gate.status().state,'expired');
+});
+test('owner wait still expires before event delivery and cancels without resetting budgets',async()=>{
+ for(const closeAt of ['event','waiting','reply']){
+  let now=Date.now();const gate=createSingleMessageCandidate({binding,acceptAnyOwnerText:true,fixedReply:'reply',waitForOwner:true,durationMs:1000,clock:()=>now});
+  now+=16*60000;
+  if(closeAt==='waiting')gate.cancel();
+  else{
+   await gate.dispatcher.invoke(envelope(now),{needCheck:false});const event=gate.claimEvent();
+   if(closeAt==='event'){now+=1000;assert.equal(gate.finishEvent(event.eventId,'delivered'),false);}
+   else{gate.finishEvent(event.eventId,'delivered');gate.claimReply('m','reply');gate.cancel();}
+  }
+  assert.equal(gate.status().state,closeAt==='event'?'expired':'cancelled');assert.equal(gate.authorizeReply(),false);assert.equal(gate.claimEvent(),null);assert.equal(gate.claimReply('m','reply'),null);
+  assert.equal((await gate.dispatcher.invoke(envelope(now,{id:'later'}),{needCheck:false})).outcome,'closed');
+ }
+});

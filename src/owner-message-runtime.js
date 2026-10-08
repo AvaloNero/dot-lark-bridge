@@ -9,14 +9,27 @@ import { object, rpcResult, toolResult } from './common.js';
 
 // No environment adapter/module selection and no default activation. The caller
 // supplies the separately approved isolated session and verified file config.
-export function createOwnerMessageRuntime({session,authConfig,connectionConfig,lockDirectory,deadlineMs,providerSend,approved=false,
+export function createOwnerMessageRuntime({session,authConfig,connectionConfig,lockDirectory,deadlineMs,waitForOwner=false,providerSend,approved=false,
   clock=Date.now,authenticateFactory=createAuthenticator,connectionFactory=createLarkConnection,modeLock=acquireModeLock}={}) {
- let server,gateway,release,timer,closing,started=false,stopping=false,authenticate,startSettled,finishStart,effectiveDeadline=deadlineMs;
+ let server,gateway,gatewayGeneration,gatewayAbort,currentLeaseDeadline,release,timer,closing,started=false,stopping=false,authenticate,startSettled,finishStart,effectiveDeadline=waitForOwner?Infinity:deadlineMs;
  function active(){if(stopping||clock()>=effectiveDeadline)throw new Error('Candidate stopped');}
  const close=()=>{
-  if(!closing)closing=(async()=>{stopping=true;clearTimeout(timer);session.close();gateway?.close();await startSettled;if(server)await new Promise(resolve=>server.close(resolve));release?.();})();return closing;
+  if(!closing)closing=(async()=>{stopping=true;clearTimeout(timer);session.close();gatewayAbort?.abort();gateway?.close();await startSettled;if(server)await new Promise(resolve=>server.close(resolve));release?.();})();return closing;
  };
  const laterClose=()=>setImmediate(()=>close().catch(()=>{}));
+ const stopGateway=()=>{gatewayGeneration=undefined;gatewayAbort?.abort();gatewayAbort=undefined;gateway?.close();gateway=undefined;};
+ function armSubscription(expiry){
+  clearTimeout(timer);timer=setTimeout(()=>{
+   if(waitForOwner&&!session.status().incoming_claimed){stopGateway();return;}
+   laterClose();
+  },Math.max(1,expiry-clock()));
+ }
+ async function receive(envelope){
+  const result=await session.receive(envelope);
+  if(session.status().phase==='closed')laterClose();
+  else if(session.status().incoming_claimed&&session.expiresAt)armSubscription(session.expiresAt());
+  return result;
+ }
  async function rpc(method,params,principal){
   active();
   const catalog={ttlMs:0,cacheScope:'private'};
@@ -33,10 +46,17 @@ export function createOwnerMessageRuntime({session,authConfig,connectionConfig,l
    const scopedPrincipal=params.ttlMs==null?principal:{...principal,validUntil:Math.min(principal.validUntil,clock()+params.ttlMs)};
    const result=await session.subscribe({url:params.delivery.url,secret:params.delivery.secret},scopedPrincipal);
    const subscriptionDeadline=Date.parse(result.refreshBefore);if(!Number.isFinite(subscriptionDeadline))throw Error();
-   effectiveDeadline=Math.min(effectiveDeadline,subscriptionDeadline);active();
-   clearTimeout(timer);timer=setTimeout(laterClose,Math.max(1,effectiveDeadline-clock()));
-   gateway=connectionFactory(connectionConfig,{invoke:envelope=>session.receive(envelope)},{autoReconnect:false,...(providerSend?{send:providerSend}:{})});
-   await gateway.start();active();return{...result,cursor:null,truncated:false};
+   if(!waitForOwner)effectiveDeadline=Math.min(effectiveDeadline,subscriptionDeadline);active();if(subscriptionDeadline<=clock())throw Error();
+   currentLeaseDeadline=subscriptionDeadline;armSubscription(subscriptionDeadline);
+   let selected=gateway,generation=gatewayGeneration;
+   if(!selected){
+    generation={};gatewayGeneration=generation;const controller=new AbortController();gatewayAbort=controller;
+    const scopedSend=providerSend?((url,options)=>providerSend(url,{...options,signal:controller.signal,beforeConnect(){active();if(controller.signal.aborted||gatewayGeneration!==generation||currentLeaseDeadline<=clock())throw new Error('Gateway lease inactive');options.beforeConnect?.();}})):undefined;
+    selected=connectionFactory(connectionConfig,{invoke:receive},{autoReconnect:false,report(event){if(gatewayGeneration===generation&&event==='lark_connection_failed')laterClose();},...(scopedSend?{send:scopedSend}:{})});gateway=selected;
+    try{await selected.start();}catch{if(gatewayGeneration===generation)laterClose();else selected.close();throw new Error('Gateway start failed');}
+   }
+   if(gatewayGeneration!==generation){selected.close();throw new Error('Gateway superseded');}
+   active();if(currentLeaseDeadline<=clock()){stopGateway();throw Error();}return{...result,cursor:null,truncated:false};
   }
   if(method==='tools/call'){
    object(params,['name','arguments','_meta'],['name','arguments']);
@@ -48,8 +68,8 @@ export function createOwnerMessageRuntime({session,authConfig,connectionConfig,l
  }
  return Object.freeze({close,status:()=>({started,stopping,gateway_connected:gateway?.status?.()==='connected',...session.status()}),
   async start(){
-   if(approved!==true||started||stopping||authConfig?.authMode!=='tunnel-service'||authConfig?.tunnelServiceOperation!=='readiness'||
-    authConfig?.principal!=='tunnel-owner:dot-bridge'||!['127.0.0.1','::1'].includes(authConfig.host)||!Number.isSafeInteger(deadlineMs)||deadlineMs<=clock()||deadlineMs>clock()+900000)throw new Error('Explicit isolated runtime approval and bounded loopback configuration required');
+   if(typeof waitForOwner!=='boolean'||approved!==true||started||stopping||authConfig?.authMode!=='tunnel-service'||authConfig?.tunnelServiceOperation!=='readiness'||
+    authConfig?.principal!=='tunnel-owner:dot-bridge'||!['127.0.0.1','::1'].includes(authConfig.host)||(waitForOwner!==true&&(!Number.isSafeInteger(deadlineMs)||deadlineMs<=clock()||deadlineMs>clock()+900000)))throw new Error('Explicit isolated runtime approval and bounded loopback configuration required');
    started=true;startSettled=new Promise(resolve=>{finishStart=resolve;});
    try{
     authenticate=authenticateFactory(authConfig,async()=>{throw new Error('No OAuth network');},clock);
@@ -64,11 +84,11 @@ export function createOwnerMessageRuntime({session,authConfig,connectionConfig,l
       const request=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(Buffer.concat(chunks)));id=request.id??null;
       const params=validateMcp(request,req.headers);if(!Object.hasOwn(request,'id'))throw Error();
       respond(200,rpcResult(id,await rpc(request.method,params,principal)));
-     }catch{if(clock()>=effectiveDeadline)laterClose();respond(400,{jsonrpc:'2.0',id,error:{code:-32012,message:'Isolated owner-message request rejected'}});}
+     }catch{if(clock()>=effectiveDeadline||session.status().phase==='closed')laterClose();respond(400,{jsonrpc:'2.0',id,error:{code:-32012,message:'Isolated owner-message request rejected'}});}
     });
     server.requestTimeout=10000;server.headersTimeout=10000;server.timeout=15000;server.keepAliveTimeout=1000;
     await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(authConfig.port,authConfig.host,resolve);});
-    active();timer=setTimeout(laterClose,Math.max(1,deadlineMs-clock()));return server.address();
+    active();if(!waitForOwner)timer=setTimeout(laterClose,Math.max(1,deadlineMs-clock()));return server.address();
    }catch{finishStart?.();await close();throw new Error('Isolated runtime startup failed');}finally{finishStart?.();}
   }
  });

@@ -93,3 +93,94 @@ test('expired shorter subscription never constructs gateway after callback conti
 test('shared experiment relays one verified owner text without prescribed words',{},async()=>{
  const shared=await import(pathToFileURL(source));await run(shared.makeOwnerMessageExperimentTransport,shared.ownerMessageExperimentStatus,{anyText:true});
 });
+
+test('waiting runtime survives fifteen minutes and expired lease while gateway pauses until renewal',async()=>{
+ let now=Date.now(),starts=0,closed=0,released=0;const reports=[],signals=[];
+ const runtime=createOwnerMessageRuntime({approved:true,waitForOwner:true,clock:()=>now,providerSend:async(_url,options)=>{options.beforeConnect();signals.push(options.signal);return{};},session:{close(){},status(){return{incoming_claimed:false};},async subscribe(_input,principal){return{id:'sub',refreshBefore:new Date(principal.validUntil).toISOString()};}},authConfig:{authMode:'tunnel-service',tunnelServiceOperation:'readiness',principal:'tunnel-owner:dot-bridge',host:'127.0.0.1',port:0},connectionConfig:{larkAppId:credentials.appId},authenticateFactory:()=>async()=>({id:'tunnel-owner:dot-bridge',validUntil:now+60000}),modeLock:()=>()=>{released++;},connectionFactory:(_c,_d,options)=>{reports.push(options.report);return{async start(){starts++;await options.send('https://open.feishu.cn/callback/ws/endpoint',{purpose:'provider'});},close(){closed++;}};}});
+ const address=await runtime.start();
+ const call=async(method,params)=>{const request=mcpRequest(method,params);const response=await fetch(`http://127.0.0.1:${address.port}/mcp`,{method:'POST',headers:{'content-type':'application/json',accept:'application/json, text/event-stream','mcp-protocol-version':'2026-07-28','mcp-method':method},body:JSON.stringify(request)});await response.text();return response.status;};
+ const params={name:'lark.message.created',arguments:{conversation:'owner'},delivery:{mode:'webhook',url:'https://fixture.example/cb',secret:'synthetic'},ttlMs:30};
+ try{
+  now+=16*60000;assert.equal(await call('events/list',{}),200);assert.equal(starts,0);
+  assert.equal(await call('events/subscribe',params),200);assert.equal(starts,1);
+  await new Promise(resolve=>setTimeout(resolve,80));assert.equal(closed,1);assert.equal(released,0);assert.equal(signals[0].aborted,true);
+  now+=100;assert.equal(await call('events/list',{}),200);
+  assert.equal(await call('events/subscribe',{...params,ttlMs:1000}),200);assert.equal(starts,2);assert.equal(signals[1].aborted,false);
+  reports[0]('lark_connection_failed');await new Promise(resolve=>setImmediate(resolve));assert.equal(released,0);
+  reports[1]('lark_connection_failed');await new Promise(resolve=>setTimeout(resolve,20));assert.equal(released,1);
+ }finally{await runtime.close();}assert.equal(released,1);
+});
+
+test('renewable shared session waits for owner, renews only identical binding and never extends accepted message',async()=>{
+ const shared=await import(pathToFileURL(source));let now=Date.now(),callbacks=0;
+ const proxyEnv={HTTPS_PROXY:'http://proxy.example:8080'};
+ const transport=shared.makeOwnerMessageExperimentTransport({approvedOwnerMessageExperiment:true,channel:'lark',acceptAnyOwnerText:true,waitForOwner:true,proxyEnv,now:()=>now,connect:async(_u,_p,r)=>{callbacks++;await r.beforeConnect();const body=JSON.parse(r.body);return{status:200,headers:{},body:Buffer.from(JSON.stringify(body.type==='verification'?{challenge:body.challenge}:{}))};}});
+ const session=createLarkOwnerMessageSession({credentials,expectedAppId:credentials.appId,acceptAnyOwnerText:true,fixedReply:'fixed reply',waitForOwner:true,authenticatedCallbackDiscovery:true,callbackTransport:transport,recognizeTransport:shared.ownerMessageExperimentStatus,proxyEnv,providerSend:async()=>{throw Error('no provider');},clock:()=>now});
+ const input={url:'https://fixture.example/cb',secret:'whsec_'+Buffer.alloc(32,11).toString('base64url')};
+ const principal=()=>({id:'tunnel-owner:dot-bridge',validUntil:now+3600000});
+ try{
+  now+=16*60000;assert.equal(callbacks,0);
+  const first=await session.subscribe(input,principal());assert.equal(callbacks,1);
+  now+=61*60000;
+  await assert.rejects(session.receive(event(now,'before renewal')));
+  await assert.rejects(session.subscribe({...input,url:'https://other.example/cb'},principal()));
+  await assert.rejects(session.subscribe({...input,secret:'whsec_'+Buffer.alloc(32,12).toString('base64url')},principal()));
+  const renewed=await session.subscribe(input,principal());assert.equal(renewed.id,first.id);assert.equal(callbacks,1);
+  assert.equal((await session.receive(event(now,'普通消息，不是口令'))).outcome,'delivered');assert.equal(callbacks,2);
+  const before=session.readMessage('m',principal()).reply_deadline;
+  await assert.rejects(session.subscribe(input,principal()));
+  assert.equal(session.readMessage('m',principal()).reply_deadline,before);
+  now=Date.parse(before)+1;assert.throws(()=>session.readMessage('m',principal()));
+ }finally{session.close();}
+});
+
+
+test('waiting mode requires literal booleans and never starts for truthy aliases',async()=>{
+ let starts=0;
+ for(const waitForOwner of [1,'true','false',null]){
+  const runtime=createOwnerMessageRuntime({waitForOwner,approved:true,deadlineMs:Date.now()+60000,session:{close(){},status(){return{};}},authConfig:{authMode:'tunnel-service',tunnelServiceOperation:'readiness',principal:'tunnel-owner:dot-bridge',host:'127.0.0.1',port:0},authenticateFactory(){starts++;},connectionFactory(){starts++;}});
+  await assert.rejects(runtime.start());
+  assert.throws(()=>createLarkOwnerMessageSession({credentials,expectedAppId:credentials.appId,waitForOwner,deadlineMs:Date.now()+60000,callbackHosts:['fixture.example'],callbackTransport:async()=>{},recognizeTransport:()=>{},providerSend:async()=>{}}));
+ }
+ assert.equal(starts,0);
+});
+
+test('late start from an expired gateway cannot close a renewed generation',async()=>{
+ for(const rejectOld of [false,true]){
+  let settleOld,starts=0,released=0;const closed=[0,0];
+  const runtime=createOwnerMessageRuntime({approved:true,waitForOwner:true,session:{close(){},status(){return{incoming_claimed:false};},async subscribe(_i,p){return{id:'sub',refreshBefore:new Date(p.validUntil).toISOString()};}},authConfig:{authMode:'tunnel-service',tunnelServiceOperation:'readiness',principal:'tunnel-owner:dot-bridge',host:'127.0.0.1',port:0},connectionConfig:{larkAppId:credentials.appId},authenticateFactory:()=>async()=>({id:'tunnel-owner:dot-bridge',validUntil:Date.now()+60000}),modeLock:()=>()=>{released++;},connectionFactory:()=>{const index=starts++;return{start(){if(index)return Promise.resolve();return new Promise((resolve,reject)=>{settleOld=()=>rejectOld?reject(Error('synthetic')):resolve();});},close(){closed[index]++;}};}});
+  const address=await runtime.start();
+  const call=async ttlMs=>{const request=mcpRequest('events/subscribe',{name:'lark.message.created',arguments:{conversation:'owner'},delivery:{mode:'webhook',url:'https://fixture.example/cb',secret:'synthetic'},ttlMs});const response=await fetch(`http://127.0.0.1:${address.port}/mcp`,{method:'POST',headers:{'content-type':'application/json',accept:'application/json, text/event-stream','mcp-protocol-version':'2026-07-28','mcp-method':'events/subscribe'},body:JSON.stringify(request)});await response.text();return response.status;};
+  try{
+   const old=call(30);await new Promise(resolve=>setTimeout(resolve,80));assert.equal(starts,1);assert.ok(closed[0]>=1);
+   assert.equal(await call(1000),200);assert.equal(starts,2);
+   settleOld();assert.equal(await old,400);await new Promise(resolve=>setImmediate(resolve));assert.equal(closed[1],0);assert.equal(released,0);
+  }finally{settleOld?.();await runtime.close();}assert.equal(released,1);assert.ok(closed[1]>=1);
+ }
+});
+
+test('launcher preserves explicit timed mode and waiting mode never reads the old window',async()=>{
+ const {ownerMessagePlan,ownerMessageScope,startOwnerMessageCandidate}=await import('../scripts/owner-message-candidate.js');
+ const noRead=new Proxy({}, {get(){throw Error('must not inspect environment');}});
+ assert.deepEqual(ownerMessageScope({waitForOwner:true,env:noRead}),{waitForOwner:true});
+ assert.deepEqual(ownerMessageScope({waitForOwner:false,env:{OWNER_MESSAGE_WINDOW_SECONDS:'900'},clock:()=>1000}),{waitForOwner:false,deadlineMs:901000});
+ assert.equal(ownerMessagePlan().wait_for_owner,false);assert.equal(ownerMessagePlan().supports_wait_for_owner,true);
+ assert.equal((await startOwnerMessageCandidate({waitForOwner:false,env:noRead})).wait_for_owner,false);
+ for(const waitForOwner of ['true','false',1,null]){
+  assert.throws(()=>ownerMessageScope({waitForOwner,env:noRead}));
+  await assert.rejects(startOwnerMessageCandidate({approved:true,waitForOwner,env:noRead}));
+ }
+ assert.throws(()=>ownerMessageScope({waitForOwner:false,env:{OWNER_MESSAGE_WINDOW_SECONDS:'901'}}));
+});
+
+
+test('public CLI preserves plan and timed defaults and requires the explicit waiting flag',async()=>{
+ const {ownerMessageCliMode}=await import('../scripts/owner-message-candidate.js');
+ assert.deepEqual(ownerMessageCliMode([]),{approved:false,waitForOwner:false});
+ assert.deepEqual(ownerMessageCliMode(['--confirm-owner-single-message-experiment']),{approved:true,waitForOwner:false});
+ assert.deepEqual(ownerMessageCliMode(['--confirm-owner-single-message-experiment','--wait-for-owner']),{approved:true,waitForOwner:true});
+ for(const args of [['--wait-for-owner'],['--wait-for-owner','--confirm-owner-single-message-experiment'],['--confirm-owner-single-message-experiment','true'],['--confirm-owner-single-message-experiment','--wait-for-owner','extra']])assert.throws(()=>ownerMessageCliMode(args));
+ const {spawnSync}=await import('node:child_process');
+ const plan=spawnSync(process.execPath,['scripts/owner-message-candidate.js'],{encoding:'utf8',env:{LARK_CREDENTIALS_FILE:'/does-not-exist',OWNER_MESSAGE_WINDOW_SECONDS:'invalid'}});
+ assert.equal(plan.status,0);const value=JSON.parse(plan.stdout);assert.equal(value.credential_read,false);assert.equal(value.wait_for_owner,false);assert.equal(value.supports_wait_for_owner,true);
+});
