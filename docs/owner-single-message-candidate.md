@@ -180,3 +180,21 @@ single-message budget by restarting it or choosing another generation directory.
 This isolated single-message protocol deliberately refuses a different callback
 URL or signing secret on renewal; automatic signing-secret rotation is not
 implemented here. It never silently substitutes a destination or widens access.
+
+## Reply acknowledgement and shutdown
+
+The authenticated `reply_to_lark` response has a 30-second socket budget,
+matching its aggregate upstream call. Ordinary reads retain their existing
+budgets. The provider may need two sequential requests (token and reply), each
+with its existing 10-second bound; message expiry, authorization and abort
+checks still apply. There are no automatic retries when acknowledgement is
+unknown. A local upstream timeout is a transport failure, not evidence that the
+provider did not send; an outer client's error-code mapping must be verified
+separately.
+
+After a terminal reply, shutdown waits for the HTTP response's `finish` or
+connection `close` event. It introduces no additional sleep period or persistent
+business listener. If the caller disconnected while the approved reply was in
+flight, completion still closes the scope. The encrypted checkpoint and existing
+supervisor's redacted terminal status are retained for read-only reconciliation;
+operators must not resend merely because the upstream response was lost.

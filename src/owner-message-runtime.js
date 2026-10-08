@@ -53,7 +53,7 @@ export function createOwnerMessageRuntime({session,authConfig,connectionConfig,l
    object(params,['name','arguments','delivery','ttlMs','cursor','_meta'],['name','arguments','delivery']);object(params.arguments,['conversation'],['conversation']);
    if(params.name!=='lark.message.created'||params.arguments.conversation!=='owner'||params.cursor!=null)throw Error();
    const sub=method==='events/subscribe';object(params.delivery,sub?['mode','url','secret']:['mode','url'],sub?['mode','url','secret']:['mode','url']);if(params.delivery.mode!=='webhook')throw Error();
-   if(!sub){session.unsubscribe(params.delivery.url,principal);gateway?.close();laterClose();return{};}
+   if(!sub){session.unsubscribe(params.delivery.url,principal);gateway?.close();return{};}
    if(params.ttlMs!=null&&(!Number.isSafeInteger(params.ttlMs)||params.ttlMs<=0))throw Error();
    const scopedPrincipal=params.ttlMs==null?principal:{...principal,validUntil:Math.min(principal.validUntil,clock()+params.ttlMs)};
    const result=await session.subscribe({url:params.delivery.url,secret:params.delivery.secret},scopedPrincipal);
@@ -65,7 +65,7 @@ export function createOwnerMessageRuntime({session,authConfig,connectionConfig,l
    object(params,['name','arguments','_meta'],['name','arguments']);
    if(params.name==='check_lark_setup'){object(params.arguments,['callback_url']);return toolResult(session.setup(params.arguments.callback_url));}
    if(params.name==='get_lark_message'){object(params.arguments,['message_id'],['message_id']);return toolResult(session.readMessage(params.arguments.message_id,principal));}
-   if(params.name==='reply_to_lark'){object(params.arguments,['message_id','text'],['message_id','text']);const result=await session.reply(params.arguments.message_id,params.arguments.text,principal);laterClose();return toolResult({message_id:params.arguments.message_id,...result,error:null});}
+   if(params.name==='reply_to_lark'){object(params.arguments,['message_id','text'],['message_id','text']);const result=await session.reply(params.arguments.message_id,params.arguments.text,principal);return toolResult({message_id:params.arguments.message_id,...result,error:null});}
   }
   throw new Error('Unsupported candidate method');
  }
@@ -79,15 +79,21 @@ export function createOwnerMessageRuntime({session,authConfig,connectionConfig,l
     authenticate=authenticateFactory(authConfig,async()=>{throw new Error('No OAuth network');},clock);
     server=http.createServer(async(req,res)=>{
      let id=null;
-     const respond=(status,value)=>{if(!res.destroyed&&!res.headersSent){res.writeHead(status,{'Content-Type':'application/json','Cache-Control':'no-store'});res.end(JSON.stringify(value));}};
+     const closeFinishedScope=()=>{if(session.status().phase==='closed')close().catch(()=>{});};
+     const respond=(status,value)=>{
+      if(session.status().phase==='closed'){res.once('finish',closeFinishedScope);res.once('close',closeFinishedScope);}
+      if(!res.destroyed&&!res.headersSent){res.writeHead(status,{'Content-Type':'application/json','Cache-Control':'no-store'});res.end(JSON.stringify(value));}
+      else closeFinishedScope();
+     };
      try{
       active();if(req.method!=='POST'||req.url!=='/mcp'||req.headers.origin!==undefined||!['127.0.0.1','localhost','[::1]'].includes(new URL(`http://${req.headers.host}`).hostname))throw Error();
       const principal=await authenticate(req);if(!/^application\/json(?:;|$)/i.test(req.headers['content-type']||'')||req.headers['content-encoding'])throw Error();
       let bytes=0;const chunks=[];for await(const chunk of req){bytes+=chunk.length;if(bytes>32768)throw Error();chunks.push(chunk);}
       const request=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(Buffer.concat(chunks)));id=request.id??null;
       const params=validateMcp(request,req.headers);if(!Object.hasOwn(request,'id'))throw Error();
+      if(request.method==='tools/call'&&params.name==='reply_to_lark')res.setTimeout(30000);
       respond(200,rpcResult(id,await rpc(request.method,params,principal)));
-     }catch{if(clock()>=effectiveDeadline||session.status().phase==='closed')laterClose();respond(400,{jsonrpc:'2.0',id,error:{code:-32012,message:'Isolated owner-message request rejected'}});}
+     }catch{if(clock()>=effectiveDeadline)laterClose();respond(400,{jsonrpc:'2.0',id,error:{code:-32012,message:'Isolated owner-message request rejected'}});}
     });
     server.requestTimeout=10000;server.headersTimeout=10000;server.timeout=15000;server.keepAliveTimeout=1000;
     await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(authConfig.port,authConfig.host,resolve);});

@@ -195,3 +195,27 @@ test('runtime closes durable storage before releasing the application lock',asyn
  const runtime=createOwnerMessageRuntime({approved:true,waitForOwner:true,session:{close(){},status(){return{};}},authConfig:{authMode:'tunnel-service',tunnelServiceOperation:'readiness',principal:'tunnel-owner:dot-bridge',host:'127.0.0.1',port:0},connectionConfig:{larkAppId:credentials.appId},authenticateFactory:()=>async()=>{},modeLock:()=>()=>order.push('release'),onClose:()=>order.push('store_closed')});
  await runtime.start();await runtime.close();assert.deepEqual(order,['store_closed','release']);
 });
+
+test('authenticated reply response finishes before shutdown and receives its dedicated socket budget',async t=>{
+ const http=await import('node:http');const order=[],timeouts=[];let phase='awaiting_fixed_reply';
+ const originalEnd=http.ServerResponse.prototype.end,originalTimeout=http.ServerResponse.prototype.setTimeout;
+ t.mock.method(http.ServerResponse.prototype,'end',function(...args){this.once('finish',()=>order.push('response_finished'));return originalEnd.apply(this,args);});
+ t.mock.method(http.ServerResponse.prototype,'setTimeout',function(ms,...args){timeouts.push(ms);return originalTimeout.call(this,ms,...args);});
+ const runtime=createOwnerMessageRuntime({approved:true,waitForOwner:true,session:{close(){},status(){return{phase};},async reply(){phase='closed';return{status:'sent'};}},authConfig:{authMode:'tunnel-service',tunnelServiceOperation:'readiness',principal:'tunnel-owner:dot-bridge',host:'127.0.0.1',port:0},connectionConfig:{larkAppId:credentials.appId},authenticateFactory:()=>async req=>{if(req.headers['x-test-owner']!=='yes')throw Error();return{id:'tunnel-owner:dot-bridge',validUntil:Date.now()+60000};},modeLock:()=>()=>order.push('lock_released'),onClose:()=>order.push('store_closed')});
+ const address=await runtime.start();const request=mcpRequest('tools/call',{name:'reply_to_lark',arguments:{message_id:'m',text:'fixed reply'}});
+ const call=async owner=>{const response=await fetch(`http://127.0.0.1:${address.port}/mcp`,{method:'POST',headers:{'content-type':'application/json',accept:'application/json, text/event-stream','mcp-protocol-version':'2026-07-28','mcp-method':'tools/call','mcp-name':'reply_to_lark','x-test-owner':owner},body:JSON.stringify(request)});return{status:response.status,body:await response.json()};};
+ try{
+  assert.equal((await call('no')).status,400);assert.deepEqual(timeouts,[]);order.length=0;
+  const result=await call('yes');assert.equal(result.status,200);assert.equal(result.body.result.structuredContent.status,'sent');await runtime.close();
+  assert.deepEqual(timeouts,[30000]);assert.deepEqual(order,['response_finished','store_closed','lock_released']);
+ }finally{await runtime.close();}
+});
+
+test('caller disconnect during one reply still records completion and closes without retry',async()=>{
+ const http=await import('node:http');let phase='awaiting_fixed_reply',replyCalls=0,complete,started,finished;
+ const replyStarted=new Promise(resolve=>started=resolve),closed=new Promise(resolve=>finished=resolve);
+ const runtime=createOwnerMessageRuntime({approved:true,waitForOwner:true,session:{close(){},status(){return{phase};},async reply(){replyCalls++;started();await new Promise(resolve=>complete=resolve);phase='closed';return{status:'sent'};}},authConfig:{authMode:'tunnel-service',tunnelServiceOperation:'readiness',principal:'tunnel-owner:dot-bridge',host:'127.0.0.1',port:0},connectionConfig:{larkAppId:credentials.appId},authenticateFactory:()=>async()=>({id:'tunnel-owner:dot-bridge',validUntil:Date.now()+60000}),modeLock:()=>()=>{},onClose:finished});
+ const address=await runtime.start(),body=JSON.stringify(mcpRequest('tools/call',{name:'reply_to_lark',arguments:{message_id:'m',text:'fixed'}}));
+ const request=http.request({host:'127.0.0.1',port:address.port,path:'/mcp',method:'POST',headers:{'content-type':'application/json',accept:'application/json, text/event-stream','mcp-protocol-version':'2026-07-28','mcp-method':'tools/call','mcp-name':'reply_to_lark','content-length':Buffer.byteLength(body)}});request.on('error',()=>{});request.end(body);
+ try{await replyStarted;request.destroy();await new Promise(resolve=>setImmediate(resolve));complete();await closed;assert.equal(replyCalls,1);assert.equal(phase,'closed');}finally{complete?.();await runtime.close();}
+});
