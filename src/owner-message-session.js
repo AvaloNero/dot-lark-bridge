@@ -65,7 +65,8 @@ export function createLarkOwnerMessageSession({ credentials, expectedAppId, expe
       let callback_hostname=null,callback_policy='not_provided';
       if(callbackUrl!==undefined){callback_policy='invalid';try{const candidate=new URL(callbackUrl);destinationUrl(callbackUrl,[candidate.hostname]);callback_hostname=candidate.hostname;callback_policy=subscription?.url===candidate.href?'allowlisted':'not_allowlisted';}catch{}}
       const callback_transport=recognizeTransport(callbackTransport,proxyEnv);
-      return {callback_transport,callback_hostname,callback_policy,binding_ready:true,delivery_configured:!revoked&&!!subscription&&subscription.validUntil>clock(),network_checked:false};
+      const pending_message=!revoked&&clock()<scopeDeadline()&&callback_transport?.ready===true?gate.pendingMessage():null;
+      return {...(callback_transport?.mode==='owner_single_message_proxy'?{pending_message}:{}),callback_transport,callback_hostname,callback_policy,binding_ready:true,delivery_configured:!revoked&&!!subscription&&subscription.validUntil>clock(),network_checked:false};
     },
     readMessage(messageId,principal) {
       authorize();if(principal?.id!=='tunnel-owner:dot-bridge'||!Number.isFinite(principal.validUntil)||principal.validUntil<=clock())throw new Error('Authenticated owner required');

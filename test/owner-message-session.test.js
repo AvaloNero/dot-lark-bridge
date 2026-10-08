@@ -30,6 +30,8 @@ async function run(makeTransport,recognize,{failReply=false,cancelAfterEvent=fal
    assert.equal((await call('events/list',{},'stranger')).status,400);assert.equal(calls.length,0);
    assert.equal((await call('events/subscribe',{name:'lark.message.created',arguments:{conversation:'owner'},delivery:{mode:'webhook',url:'https://receiver.example.com/private-callback',secret:'whsec_'+Buffer.alloc(32,7).toString('base64')}})).status,200);
    assert.equal((await dispatcher.invoke(event(now))).outcome,'delivered');
+   const unauthorized=await call('tools/call',{name:'check_lark_setup',arguments:{}},'stranger');assert.equal(unauthorized.status,400);assert.equal(JSON.stringify(unauthorized.body).includes('message_id'),false);
+   const recovered=await call('tools/call',{name:'check_lark_setup',arguments:{}});assert.deepEqual(recovered.body.result.structuredContent.pending_message,{message_id:'m',reply_deadline:new Date(now+60000).toISOString()});assert.equal(JSON.stringify(recovered.body).includes('exact test'),false);
    const replied=await call('tools/call',{name:'reply_to_lark',arguments:{message_id:'m',text:'fixed reply'}});assert.equal(replied.status,200);assert.equal(providerReplies,1);
    assert.deepEqual(calls,['challenge','lark.message.created']);
   }finally{await runtime.close();assert.ok(closed>=1);assert.equal(released,1);callbackTransport.close?.();}
@@ -120,17 +122,17 @@ test('renewable shared session waits for owner, renews only identical binding an
  const principal=()=>({id:'tunnel-owner:dot-bridge',validUntil:now+3600000});
  try{
   now+=16*60000;assert.equal(callbacks,0);
-  const first=await session.subscribe(input,principal());assert.equal(callbacks,1);
+  const first=await session.subscribe(input,principal());assert.equal(callbacks,1);assert.equal(session.setup().pending_message,null);
   now+=61*60000;
   await assert.rejects(session.receive(event(now,'before renewal')));
   await assert.rejects(session.subscribe({...input,url:'https://other.example/cb'},principal()));
   await assert.rejects(session.subscribe({...input,secret:'whsec_'+Buffer.alloc(32,12).toString('base64url')},principal()));
   const renewed=await session.subscribe(input,principal());assert.equal(renewed.id,first.id);assert.equal(callbacks,1);
   assert.equal((await session.receive(event(now,'普通消息，不是口令'))).outcome,'delivered');assert.equal(callbacks,2);
-  const before=session.readMessage('m',principal()).reply_deadline;
+  const before=session.readMessage('m',principal()).reply_deadline;assert.deepEqual(session.setup().pending_message,{message_id:'m',reply_deadline:before});
   await assert.rejects(session.subscribe(input,principal()));
   assert.equal(session.readMessage('m',principal()).reply_deadline,before);
-  now=Date.parse(before)+1;assert.throws(()=>session.readMessage('m',principal()));
+  now=Date.parse(before)+1;assert.throws(()=>session.readMessage('m',principal()));assert.equal(session.setup().pending_message,undefined);
  }finally{session.close();}
 });
 

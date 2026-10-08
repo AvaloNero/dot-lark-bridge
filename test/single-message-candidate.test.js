@@ -70,3 +70,16 @@ test('owner wait still expires before event delivery and cancels without resetti
   assert.equal((await gate.dispatcher.invoke(envelope(now,{id:'later'}),{needCheck:false})).outcome,'closed');
  }
 });
+
+test('pending metadata exposes only the one delivered unclaimed message without consuming it',async()=>{
+ for(const terminal of ['claimed','cancelled','expired']){
+  let now=Date.now();const gate=createSingleMessageCandidate({binding,acceptAnyOwnerText:true,fixedReply:'fixed',clock:()=>now,durationMs:1000});
+  assert.equal(gate.pendingMessage(),null);
+  await gate.dispatcher.invoke(envelope(now,{text:'private-body-canary'}),{needCheck:false});assert.equal(gate.pendingMessage(),null);
+  const event=gate.claimEvent();assert.equal(gate.pendingMessage(),null);gate.finishEvent(event.eventId,'delivered');
+  const metadata={message_id:'m',reply_deadline:new Date(now+1000).toISOString()};
+  assert.deepEqual(gate.pendingMessage(),metadata);assert.deepEqual(gate.pendingMessage(),metadata);assert.equal(JSON.stringify(metadata).includes('private-body-canary'),false);
+  if(terminal==='claimed')assert.ok(gate.claimReply('m','fixed'));else if(terminal==='cancelled')gate.cancel();else now+=1000;
+  assert.equal(gate.pendingMessage(),null);
+ }
+});

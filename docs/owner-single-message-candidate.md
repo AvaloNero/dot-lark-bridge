@@ -116,3 +116,13 @@ The public API and confirmed CLI default to the previous timed mode. Only an
 explicit `waitForOwner: true` API option or additional `--wait-for-owner` CLI
 flag enables waiting. A no-argument CLI remains plan-only; its
 `supports_wait_for_owner: true` capability does not imply activation.
+
+For a delivered event whose wake did not expose the event payload to the caller,
+the existing authenticated `check_lark_setup` returns optional `pending_message`
+metadata in the isolated experiment: only `message_id` and `reply_deadline`, or
+null. It never returns the text, source identity, callback URL or credentials.
+Only the single successfully delivered, still-valid message before reply claim
+is eligible. This read does not extend its deadline or consume a reply budget.
+The aggregate exposes the same metadata through `check_lark_readiness`; ordinary
+bridge readiness and the public tool names remain unchanged. Metadata lives in
+the existing process only and does not recover a terminated process's memory.

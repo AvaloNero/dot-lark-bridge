@@ -41,6 +41,10 @@ export function createSingleMessageCandidate({ binding, expectedText, acceptAnyO
       if (!active() || state !== 'event_claimed' || id !== eventId || !['delivered','uncertain','dead'].includes(outcome)) return false;
       state = outcome === 'delivered' ? 'event_delivered' : outcome; return true;
     },
+    pendingMessage() {
+      if (!active() || state !== 'event_delivered') return null;
+      return { message_id: message.id, reply_deadline: new Date(Math.min(deadline,message.expires)).toISOString() };
+    },
     readMessage(messageId) {
       if (!active() || !['event_delivered','reply_claimed'].includes(state) || messageId !== message?.id) return null;
       return {message_id:message.id,text:message.text,reply_deadline:new Date(Math.min(deadline,message.expires)).toISOString()};
